@@ -45,6 +45,44 @@ COORDS: dict[str, tuple[float, float]] = {
     "Zhytomyrska oblast": (50.45, 28.40),
 }
 
+# Ukrainian display names. Oblast forms match the bundled GeoJSON `name`
+# property exactly (data/raw/ua_oblasts.geojson); Kyiv City has no polygon.
+UA_NAMES: dict[str, str] = {
+    "Cherkaska oblast": "Черкаська область",
+    "Chernihivska oblast": "Чернігівська область",
+    "Chernivetska oblast": "Чернівецька область",
+    "Dnipropetrovska oblast": "Дніпропетровська область",
+    "Donetska oblast": "Донецька область",
+    "Ivano-Frankivska oblast": "Івано-Франківська область",
+    "Kharkivska oblast": "Харківська область",
+    "Khersonska oblast": "Херсонська область",
+    "Khmelnytska oblast": "Хмельницька область",
+    "Kirovohradska oblast": "Кіровоградська область",
+    "Kyiv City": "Київ",
+    "Kyivska oblast": "Київська область",
+    "Luhanska oblast": "Луганська область",
+    "Lvivska oblast": "Львівська область",
+    "Mykolaivska oblast": "Миколаївська область",
+    "Odeska oblast": "Одеська область",
+    "Poltavska oblast": "Полтавська область",
+    "Rivnenska oblast": "Рівненська область",
+    "Sumska oblast": "Сумська область",
+    "Ternopilska oblast": "Тернопільська область",
+    "Vinnytska oblast": "Вінницька область",
+    "Volynska oblast": "Волинська область",
+    "Zakarpatska oblast": "Закарпатська область",
+    "Zaporizka oblast": "Запорізька область",
+    "Zhytomyrska oblast": "Житомирська область",
+}
+
+
+def ua_name(region: str | None) -> str:
+    """Ukrainian display name for a canonical region; None -> 'Уся Україна'."""
+    if region is None:
+        return "Уся Україна"
+    return UA_NAMES.get(region, region)
+
+
 # Land-border adjacency (defined one-way; symmetrised below).
 _ADJ_RAW: dict[str, list[str]] = {
     "Volynska oblast": ["Rivnenska oblast", "Lvivska oblast"],

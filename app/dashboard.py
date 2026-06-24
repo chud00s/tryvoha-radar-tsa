@@ -1,14 +1,12 @@
 """Tryvoha Radar — Streamlit dashboard.
 
-Two modes:
-  * Споживач  — "what is the risk in my oblast now / today", simple.
-  * Аналітик  — patterns, model quality, mass-attack anomalies, cross-border
-                propagation, and the OSINT (Telegram) event layer.
+Modes:
+  * Споживач  — actionable: current risk + WHAT TO DO + national risk map.
+  * Аналітик  — patterns, model quality, mass-attack anomalies, propagation, OSINT.
 
 Visual language: "blueprint control room" (Dovetail design system) — near-black
-canvas with a faint grid, a single cornflower-blue accent, Inter + JetBrains Mono,
-8px radii, flat surfaces (no shadows). Danger semantics (red/amber/green) are kept
-for the risk gauge/map since they encode meaning, not decoration.
+canvas + faint grid, single cornflower-blue accent, Inter + JetBrains Mono, 8px
+radii, flat (no shadows). Danger semantics (red/amber/green) kept for risk only.
 """
 from __future__ import annotations
 
@@ -31,10 +29,10 @@ st.set_page_config(page_title="Tryvoha Radar", page_icon="🛰️", layout="wide
 
 # --- design tokens ----------------------------------------------------------
 ACCENT = "#6798ff"   # cornflower
-INK = "#0a0a0a"      # page
-COAL = "#141414"     # section / card
-CARBON = "#1e1e1e"   # surface / button
-STEEL = "#313131"    # hairline border
+INK = "#0a0a0a"
+COAL = "#141414"
+CARBON = "#1e1e1e"
+STEEL = "#313131"
 GRAPHITE = "#454545"
 FOG = "#7c7c7c"
 ASH = "#a7a7a7"
@@ -42,7 +40,9 @@ SNOW = "#ffffff"
 GOOD, WARN, BAD = "#54a24b", "#f5a623", "#e5484d"   # semantic danger scale
 
 HEAT_SCALE = [[0.0, "#101319"], [0.4, "#21407a"], [0.7, "#3f6fcf"], [1.0, ACCENT]]
-BLUE_SCALE = [[0.0, "#1a2336"], [1.0, ACCENT]]
+
+GEOJSON_PATH = config.DATA_RAW / "ua_oblasts.geojson"
+MODES = [("consumer", "👤 Споживач"), ("analyst", "🛠️ Аналітик")]
 
 DOW_NAMES = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
 EVENT_COLORS = {
@@ -59,7 +59,7 @@ html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stSidebar"
 }
 .stApp{ background-color:#0a0a0a; }
 
-/* blueprint grid motif on the canvas */
+/* blueprint grid motif */
 [data-testid="stAppViewContainer"]{
   background-color:#0a0a0a;
   background-image:
@@ -69,47 +69,56 @@ html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stSidebar"
 [data-testid="stMainBlockContainer"]{ max-width:1320px; padding-top:2.5rem; }
 [data-testid="stHeader"]{ background:transparent; }
 
-/* sidebar */
 [data-testid="stSidebar"]{ background-color:#141414; border-right:1px solid #313131; }
 
-/* headings — engineered, tight tracking */
 h1,h2,h3,h4{ font-family:'Inter'; font-weight:600; color:#ffffff; letter-spacing:-0.02em; }
 h1{ font-size:40px; letter-spacing:-0.03em; }
 h2{ font-size:24px; } h3{ font-size:20px; }
 
-/* eyebrow + captions */
 .eyebrow{ font-family:'JetBrains Mono',monospace; text-transform:uppercase;
   letter-spacing:1px; font-size:12px; color:#6798ff; margin:0 0 2px 0; }
 [data-testid="stCaptionContainer"]{ color:#a7a7a7 !important; }
 
-/* metric = instrument readout card */
-[data-testid="stMetric"]{ background:#141414; border:1px solid #313131;
-  border-radius:8px; padding:14px 16px; }
+[data-testid="stMetric"]{ background:#141414; border:1px solid #313131; border-radius:8px; padding:14px 16px; }
 [data-testid="stMetricLabel"] p{ font-family:'JetBrains Mono',monospace !important;
   text-transform:uppercase; letter-spacing:0.85px; font-size:11px !important; color:#a7a7a7 !important; }
 [data-testid="stMetricValue"]{ font-family:'Inter'; font-weight:600; color:#ffffff; }
 [data-testid="stMetricDelta"]{ font-family:'JetBrains Mono',monospace; }
 
-/* tabs — technical mono, blue active */
 [data-testid="stTabs"] button[role="tab"]{ font-family:'JetBrains Mono',monospace;
   text-transform:uppercase; letter-spacing:0.5px; font-size:12px; color:#a7a7a7; }
 [data-testid="stTabs"] button[role="tab"][aria-selected="true"]{ color:#6798ff; }
 [data-testid="stTabs"] [data-baseweb="tab-highlight"]{ background-color:#6798ff !important; }
 [data-testid="stTabs"] [data-baseweb="tab-border"]{ background-color:#313131 !important; }
 
-/* buttons */
 .stButton>button, .stDownloadButton>button{ background:#1e1e1e; color:#ffffff;
   border:1px solid #454545; border-radius:8px; font-weight:500; }
 .stButton>button:hover{ border-color:#6798ff; color:#6798ff; }
 
-/* select / inputs */
+/* mode switch — two dynamic role buttons (scoped by stable st-key-* class) */
+[class*="st-key-mode_btn_"] button{ width:100%; font-family:'JetBrains Mono',monospace;
+  letter-spacing:0.2px; font-size:13px; padding:9px 8px; white-space:nowrap; transition:all .15s ease; }
+[class*="st-key-mode_btn_"] button p{ font-size:13px; }
+[class*="st-key-mode_btn_"] button[data-testid="stBaseButton-secondary"]{ background:#1e1e1e; color:#a7a7a7; border:1px solid #454545; }
+[class*="st-key-mode_btn_"] button[data-testid="stBaseButton-secondary"]:hover{ border-color:#6798ff; color:#ffffff; }
+[class*="st-key-mode_btn_"] button[data-testid="stBaseButton-primary"]{ background:#6798ff; color:#0a0a0a; border:1px solid #6798ff; font-weight:600; }
+[class*="st-key-mode_btn_"] button[data-testid="stBaseButton-primary"]:hover,
+[class*="st-key-mode_btn_"] button[data-testid="stBaseButton-primary"]:focus{ background:#6798ff; color:#0a0a0a; border-color:#6798ff; }
+
+/* freshness chip */
+.fresh{ display:inline-flex; align-items:center; gap:8px; font-family:'JetBrains Mono',monospace;
+  font-size:12px; letter-spacing:.3px; color:#a7a7a7; background:#141414;
+  border:1px solid #313131; border-radius:8px; padding:6px 12px; margin:2px 0 8px 0; }
+.fresh .dot{ width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
+.fresh .lbl{ color:#ffffff; letter-spacing:.4px; }
+.fresh .sub{ color:#7c7c7c; }
+@keyframes freshpulse{ 0%,100%{opacity:1} 50%{opacity:.4} }
+.fresh.live .dot{ animation:freshpulse 1.8s ease-in-out infinite; }
+
 [data-baseweb="select"]>div{ background:#1e1e1e !important; border:1px solid #454545 !important; border-radius:8px !important; }
 [data-baseweb="popover"] [role="listbox"]{ background:#1e1e1e !important; }
-
-/* dataframe + alerts */
 [data-testid="stDataFrame"]{ border:1px solid #313131; border-radius:8px; }
 [data-testid="stAlert"]{ border-radius:8px; border:1px solid #313131; }
-
 hr{ border-color:#313131 !important; }
 a, a:visited{ color:#6798ff; }
 *{ box-shadow:none !important; }
@@ -162,14 +171,25 @@ def get_live_regions() -> set[str] | None:
     return live.get_live_active_regions()
 
 
+@st.cache_data(show_spinner=False)
+def ukraine_geojson() -> dict:
+    """Oblast polygons keyed by canonical region in properties.canon.
+    Crimea (no data) dropped; Kyiv City has no polygon (folds into Kyivska)."""
+    gj = json.loads(GEOJSON_PATH.read_text(encoding="utf-8"))
+    feats = []
+    for f in gj["features"]:
+        canon = geo.normalize_region(f["properties"].get("name", ""))
+        if canon is None:
+            continue
+        f["properties"]["canon"] = canon
+        feats.append(f)
+    gj["features"] = feats
+    return gj
+
+
 @st.cache_data
 def hourly(region: str | None) -> pd.DataFrame:
     return analysis.hourly_pattern(get_series(), [region] if region else None)
-
-
-@st.cache_data
-def dow(region: str | None) -> pd.DataFrame:
-    return analysis.dow_pattern(get_series(), [region] if region else None)
 
 
 @st.cache_data
@@ -180,11 +200,6 @@ def monthly(region: str | None) -> pd.DataFrame:
 @st.cache_data
 def heatmap(region: str | None) -> pd.DataFrame:
     return analysis.hour_dow_heatmap(get_series(), [region] if region else None)
-
-
-@st.cache_data
-def region_summary() -> pd.DataFrame:
-    return analysis.region_summary(get_series())
 
 
 @st.cache_data
@@ -211,9 +226,107 @@ def risk_band(r: float) -> tuple[str, str]:
 
 
 # --------------------------------------------------------------------------- #
-# Plotly styling
+# Freshness + mode switch
 # --------------------------------------------------------------------------- #
-def _style(fig: go.Figure, cartesian: bool = True) -> go.Figure:
+@st.cache_data(ttl=30, show_spinner=False)
+def freshness() -> dict:
+    if get_live_regions() is not None:
+        return {"is_live": True, "dot": GOOD,
+                "label": "Оновлюється в реальному часі", "sub": "поточний стан тривог"}
+    return {"is_live": False, "dot": ASH,
+            "label": f"Дані станом на {latest_ts_local()} (Київ)", "sub": "оновлюється раз на добу"}
+
+
+def freshness_chip():
+    f = freshness()
+    cls = "live" if f["is_live"] else "snap"
+    st.markdown(
+        f'<span class="fresh {cls}">'
+        f'<span class="dot" style="background:{f["dot"]}"></span>'
+        f'<span class="lbl">{f["label"]}</span>'
+        f'<span class="sub">· {f["sub"]}</span></span>',
+        unsafe_allow_html=True,
+    )
+
+
+def _set_mode(m: str):
+    st.session_state.mode = m
+
+
+def mode_switch() -> str:
+    """Two dynamic role buttons; active = cornflower fill. State in session_state.
+    Uses on_click callbacks so the new mode is applied before the rerun renders —
+    no highlight lag, no explicit st.rerun()."""
+    if "mode" not in st.session_state:
+        st.session_state.mode = "consumer"
+    cols = st.columns(len(MODES))
+    for col, (key, label) in zip(cols, MODES):
+        active = st.session_state.mode == key
+        col.button(label, key=f"mode_btn_{key}",
+                   type="primary" if active else "secondary", use_container_width=True,
+                   on_click=_set_mode, args=(key,))
+    return st.session_state.mode
+
+
+# --------------------------------------------------------------------------- #
+# Consumer action playbook (WHAT TO DO, not analytics)
+# --------------------------------------------------------------------------- #
+ACTIONS: dict[str, dict] = {
+    "Низький": {
+        "headline": "Звичайний режим. Тримайте готовність базовою.",
+        "steps": [
+            "Тримайте телефон зарядженим, а звук сирени — увімкненим.",
+            "Знайте найближче укриття біля дому й роботи.",
+            "Документи, вода й аптечка — в одному місці.",
+        ],
+    },
+    "Підвищений": {
+        "headline": "Будьте напоготові — реагуйте на сирену одразу.",
+        "steps": [
+            "Зарядіть телефон і павербанк зараз.",
+            "Зберіть тривожну валізку: документи, вода, ліки, павербанк.",
+            "Сплануйте, куди підете в укриття, і скоротіть час на збори.",
+            "Не вимикайте звук сповіщень про тривогу.",
+        ],
+    },
+    "Високий": {
+        "headline": "Будьте готові вкритися негайно. Не зволікайте.",
+        "steps": [
+            "За сиреною — одразу в укриття або «правило двох стін», подалі від вікон.",
+            "Тримайте тривожну валізку напоготові: документи, вода, аптечка, павербанк.",
+            "Не знімайте й не наближайтеся до уражень та роботи ППО.",
+            "Будьте на зв'язку: повідомте рідним, де ви; домовтеся про точку збору.",
+        ],
+    },
+    "—": {
+        "headline": "Дані оновлюються.",
+        "steps": ["Тримайте сповіщення увімкненими та звіряйтеся з офіційними джерелами."],
+    },
+}
+
+
+def render_action_card(band: str, color: str):
+    a = ACTIONS.get(band, ACTIONS["—"])
+    steps = "".join(f"<li>{s}</li>" for s in a["steps"])
+    st.markdown(
+        f"""
+        <div style="background:{COAL};border:1px solid {STEEL};border-left:3px solid {color};
+             border-radius:8px;padding:18px 20px;margin-top:4px;">
+          <div style="font-family:'JetBrains Mono',monospace;text-transform:uppercase;
+               letter-spacing:1px;font-size:11px;color:{ASH};margin-bottom:6px;">Що робити</div>
+          <div style="font-family:'Inter';font-weight:600;font-size:18px;color:{SNOW};
+               letter-spacing:-0.01em;margin-bottom:12px;">{a['headline']}</div>
+          <ul style="margin:0;padding-left:18px;color:{ASH};font-size:14px;line-height:1.7;">{steps}</ul>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Plotly styling + maps
+# --------------------------------------------------------------------------- #
+def _style(fig: go.Figure) -> go.Figure:
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(family="Inter, sans-serif", color=ASH, size=13),
@@ -221,39 +334,71 @@ def _style(fig: go.Figure, cartesian: bool = True) -> go.Figure:
         legend=dict(font=dict(color=ASH, size=12)),
         colorway=[ACCENT, ASH, GOOD, WARN, BAD, FOG],
     )
-    if cartesian:
-        fig.update_xaxes(gridcolor=CARBON, linecolor=STEEL, zerolinecolor=STEEL, tickfont=dict(color=FOG))
-        fig.update_yaxes(gridcolor=CARBON, linecolor=STEEL, zerolinecolor=STEEL, tickfont=dict(color=FOG))
+    fig.update_xaxes(gridcolor=CARBON, linecolor=STEEL, zerolinecolor=STEEL, tickfont=dict(color=FOG))
+    fig.update_yaxes(gridcolor=CARBON, linecolor=STEEL, zerolinecolor=STEEL, tickfont=dict(color=FOG))
     return fig
 
 
-def show(fig: go.Figure, cartesian: bool = True):
-    st.plotly_chart(_style(fig, cartesian), use_container_width=True)
+def show(fig: go.Figure):
+    st.plotly_chart(_style(fig), use_container_width=True)
 
 
 def map_layout(fig: go.Figure) -> go.Figure:
-    fig.update_layout(
-        mapbox_style="carto-darkmatter", margin=dict(l=0, r=0, t=0, b=0),
-        paper_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter, sans-serif", color=ASH),
-    )
+    fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), paper_bgcolor="rgba(0,0,0,0)",
+                      font=dict(family="Inter, sans-serif", color=ASH))
     return fig
 
 
-# --------------------------------------------------------------------------- #
-# Shared figures
-# --------------------------------------------------------------------------- #
-def risk_map(risk_df: pd.DataFrame) -> go.Figure:
+def _risk_phrase(r: float) -> str:
+    band, _ = risk_band(r)
+    return f"{band} · {round(r * 100)}%"
+
+
+def risk_map(risk_df: pd.DataFrame, active: set[str] | None = None) -> go.Figure:
+    """Filled oblast choropleth of alert risk (next 6h); active oblasts (live)
+    outlined in cornflower. Ukraine pops on a dark basemap; neighbours muted."""
+    gj = ukraine_geojson()
+    active = set(active or set())
     df = risk_df.copy()
-    df["lat"] = df["region"].map(lambda r: geo.COORDS.get(r, (None, None))[0])
-    df["lon"] = df["region"].map(lambda r: geo.COORDS.get(r, (None, None))[1])
-    df = df.dropna(subset=["lat", "lon"])
-    fig = px.scatter_mapbox(
-        df, lat="lat", lon="lon", color="risk", size=df["risk"] * 40 + 6,
-        color_continuous_scale="RdYlGn_r", range_color=(0, 1),
-        hover_name="region", hover_data={"risk": ":.0%", "lat": False, "lon": False},
-        zoom=4.3, center={"lat": 48.4, "lon": 31.2}, height=560,
+    # Kyiv City has no polygon -> fold its risk into Kyivska oblast (max).
+    kyiv = df[df["region"].isin(["Kyiv City", "Kyivska oblast"])]["risk"]
+    if not kyiv.empty:
+        df.loc[df["region"] == "Kyivska oblast", "risk"] = kyiv.max()
+    if "Kyiv City" in active:
+        active = (active - {"Kyiv City"}) | {"Kyivska oblast"}
+    df = df[df["region"] != "Kyiv City"]
+    canon = {f["properties"]["canon"] for f in gj["features"]}
+    df = df[df["region"].isin(canon)]
+    is_active = df["region"].isin(active)
+    df["name_ua"] = df["region"].map(geo.ua_name)
+    df["label"] = ["Тривога зараз" if a else _risk_phrase(r) for r, a in zip(df["risk"], is_active)]
+
+    fig = go.Figure(go.Choroplethmap(
+        geojson=gj, featureidkey="properties.canon",
+        locations=df["region"], z=df["risk"], zmin=0, zmax=1,
+        colorscale=[[0.0, GOOD], [0.5, WARN], [1.0, BAD]],
+        marker=dict(line=dict(color=STEEL, width=0.6), opacity=0.82),
+        customdata=df[["name_ua", "label"]].to_numpy(),
+        hovertemplate="<b>%{customdata[0]}</b><br>%{customdata[1]}<extra></extra>",
+        colorbar=dict(title=dict(text="Ризик", font=dict(color=ASH, size=12)),
+                      tickvals=[0, 0.5, 1], ticktext=["0%", "50%", "100%"],
+                      tickfont=dict(color=FOG, size=11), outlinewidth=0, thickness=10, len=0.7, x=0.99),
+    ))
+    act = df[is_active]
+    if not act.empty:
+        fig.add_trace(go.Choroplethmap(
+            geojson=gj, featureidkey="properties.canon",
+            locations=act["region"], z=[1] * len(act),
+            colorscale=[[0, ACCENT], [1, ACCENT]], showscale=False,
+            marker=dict(line=dict(color=ACCENT, width=2), opacity=0.0), hoverinfo="skip",
+        ))
+    fig.update_layout(
+        map=dict(style="carto-darkmatter", zoom=4.3, center={"lat": 48.5, "lon": 31.4}),
+        margin=dict(l=0, r=0, t=0, b=0), height=560, paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter, sans-serif", color=ASH),
+        hoverlabel=dict(bgcolor=CARBON, bordercolor=STEEL, font=dict(family="Inter, sans-serif", color=SNOW)),
     )
-    return map_layout(fig)
+    return fig
 
 
 def hourly_fig(df: pd.DataFrame, title: str) -> go.Figure:
@@ -265,26 +410,23 @@ def hourly_fig(df: pd.DataFrame, title: str) -> go.Figure:
     return fig
 
 
+def _active_set(risk_df: pd.DataFrame) -> set[str]:
+    """Active oblasts only when LIVE (alerts.in.ua). Snapshot data must not claim
+    'now', so we return an empty set -> the map shows forecast risk only."""
+    live_regions = get_live_regions()
+    return live_regions if live_regions is not None else set()
+
+
 # --------------------------------------------------------------------------- #
-# Consumer mode
+# Consumer mode — actionable, minimal
 # --------------------------------------------------------------------------- #
 def render_consumer(region: str):
-    st.subheader(f"🚦 Ризик для: {region}")
+    st.subheader(f"🚦 Ризик для: {geo.ua_name(region)}")
     risk_df = get_risk_now()
-    series = get_series()
-
     row = risk_df[risk_df["region"] == region]
     risk = float(row["risk"].iloc[0]) if not row.empty else float("nan")
     band, color = risk_band(risk) if risk == risk else ("—", FOG)
-
-    # "Alert now": prefer real-time alerts.in.ua, fall back to latest snapshot hour.
     live_regions = get_live_regions()
-    if live_regions is not None:
-        active_now = region in live_regions
-        live_badge = "🔴 LIVE · alerts.in.ua"
-    else:
-        active_now = bool(series[series["region"] == region]["active"].iloc[-1])
-        live_badge = "🕒 snapshot · історичний датасет"
 
     c1, c2 = st.columns([1, 1])
     with c1:
@@ -309,81 +451,57 @@ def render_consumer(region: str):
         st.plotly_chart(gauge, use_container_width=True)
     with c2:
         st.metric("Рівень ризику", band)
-        st.metric("Тривога зараз", "🔴 Активна" if active_now else "🟢 Немає")
-        st.caption(live_badge)
-        rs = region_summary().set_index("region").loc[region]
-        st.metric("Частка часу під тривогою (весь період)", f"{rs['alert_rate']:.0%}")
-        if "avg_duration_min" in rs and pd.notna(rs["avg_duration_min"]):
-            st.metric("Середня тривалість тривоги", f"{rs['avg_duration_min']:.0f} хв")
+        if live_regions is not None:   # only claim "now" in live mode
+            st.metric("Тривога зараз", "🔴 Активна" if region in live_regions else "🟢 Немає")
 
-    st.markdown(f"**Висновок:** ризик зараз — :{'red' if band=='Високий' else 'orange' if band=='Підвищений' else 'green'}[{band}].")
-
-    st.divider()
-    cc1, cc2 = st.columns([3, 2])
-    with cc1:
-        show(hourly_fig(hourly(region), "Найнебезпечніші години доби"))
-    with cc2:
-        d = dow(region)
-        fig = px.bar(d, x="day", y="alert_rate", title="За днями тижня")
-        fig.update_yaxes(tickformat=".0%", title=None)
-        fig.update_xaxes(title=None)
-        fig.update_traces(marker_color=ASH)
-        fig.update_layout(height=320, margin=dict(t=40, b=10))
-        show(fig)
-
-    st.divider()
-    eyebrow("OSINT · TELEGRAM")
-    st.markdown("#### 🛰️ Останні події")
-    ev = get_events()
-    if ev.empty:
-        st.info("Немає подій. Згенеруйте кеш: `python -m src.ai_extractor`.")
-    else:
-        reg_ev = ev[ev["region"] == region]
-        show_ev = reg_ev if not reg_ev.empty else ev
-        if reg_ev.empty:
-            st.caption("Подій саме для цієї області немає — показано всі останні події.")
-        disp = show_ev.copy()
-        disp["час (Київ)"] = disp["timestamp"].dt.tz_convert(config.DISPLAY_TZ).dt.strftime("%m-%d %H:%M")
-        st.dataframe(
-            disp[["час (Київ)", "event_type", "weapon", "region", "text"]]
-            .rename(columns={"event_type": "подія", "weapon": "засіб", "region": "область", "text": "повідомлення"})
-            .tail(12), use_container_width=True, hide_index=True,
-        )
+    render_action_card(band, color)
 
     st.divider()
     eyebrow("ПРОГНОЗ · ПО ОБЛАСТЯХ")
     st.markdown("#### 🗺️ Поточний ризик по Україні")
     if not risk_df.empty:
-        st.plotly_chart(risk_map(risk_df), use_container_width=True)
+        st.plotly_chart(risk_map(risk_df, _active_set(risk_df)), use_container_width=True)
+        cap = "Колір — ймовірність тривоги в області в наступні 6 год."
+        if live_regions is not None:
+            cap += " Синім контуром — області з діючою тривогою."
+        st.caption(cap)
 
 
 # --------------------------------------------------------------------------- #
 # Analyst mode
 # --------------------------------------------------------------------------- #
 def render_analyst(region: str | None):
-    scope = region or "Уся Україна"
-    st.subheader(f"🛠️ Аналітика — {scope}")
+    st.subheader(f"🛠️ Аналітика — {geo.ua_name(region)}")
     tabs = st.tabs([
         "🗺️ Карта ризику", "📈 Патерни", "🎯 Якість моделі",
         "🚨 Масовані атаки", "🔗 Поширення", "🛰️ OSINT-шар",
     ])
 
-    # --- risk map ---
     with tabs[0]:
+        with st.expander("Джерела даних і методологія"):
+            st.markdown(
+                f"- **Тривоги (історія):** Vadimkin air-raid dataset (GitHub) — погодинні ряди по "
+                f"24 областях + Київ; оновлюється приблизно раз на добу, актуальність до "
+                f"{latest_ts_local()} (Київ).\n"
+                "- **Поточний стан (live):** alerts.in.ua — у реальному часі на деплої.\n"
+                "- **OSINT:** повідомлення Telegram → структуровані події (демо-зразок).\n"
+                f"- **Прогноз:** модель TSA — ймовірність тривоги в наступні "
+                f"{get_metrics().get('horizon_h', 6)} год від останньої години даних."
+            )
         risk_df = get_risk_now()
         if risk_df.empty:
             st.warning("Немає прогнозу. Запустіть `python -m src.forecast --predict`.")
         else:
-            st.plotly_chart(risk_map(risk_df), use_container_width=True)
+            st.plotly_chart(risk_map(risk_df, _active_set(risk_df)), use_container_width=True)
             d = risk_df.copy()
+            d["область"] = d["region"].map(geo.ua_name)
             d["risk"] = (d["risk"] * 100).round(1)
             st.dataframe(
-                d[["region", "risk", "active_now"]]
-                .rename(columns={"region": "область", "risk": "ризик, %", "active_now": "активна зараз"}),
+                d[["область", "risk", "active_now"]]
+                .rename(columns={"risk": "ризик, %", "active_now": "активна (ост. год.)"}),
                 use_container_width=True, hide_index=True, height=300,
             )
 
-    # --- patterns ---
     with tabs[1]:
         hm = heatmap(region)
         pivot = hm.pivot(index="dow", columns="hour", values="alert_rate").reindex(range(7))
@@ -406,7 +524,6 @@ def render_analyst(region: str | None):
             fig.update_layout(height=320, margin=dict(t=40), xaxis_title=None, yaxis_title="К-ть тривог")
             show(fig)
 
-    # --- model quality ---
     with tabs[2]:
         m = get_metrics()
         if not m:
@@ -457,15 +574,12 @@ def render_analyst(region: str | None):
                 fig.update_layout(title="ROC-крива", height=330, xaxis_title="FPR", yaxis_title="TPR")
                 show(fig)
 
-    # --- mass attacks ---
     with tabs[3]:
         inten = intensity().copy()
         inten["ts_local"] = inten["ts"].dt.tz_convert(config.DISPLAY_TZ)
         daily = (
-            inten.set_index("ts_local")
-            .resample("D")
-            .agg(regions_active=("regions_active", "max"), anomaly=("is_anomaly", "max"))
-            .reset_index()
+            inten.set_index("ts_local").resample("D")
+            .agg(regions_active=("regions_active", "max"), anomaly=("is_anomaly", "max")).reset_index()
         )
         n_anom = int(inten["is_anomaly"].sum())
         st.caption(
@@ -476,39 +590,35 @@ def render_analyst(region: str | None):
         fig.add_trace(go.Scatter(x=daily["ts_local"], y=daily["regions_active"],
                                  mode="lines", name="макс. областей/день", line_color=ACCENT))
         anom = daily[daily["anomaly"] == 1]
-        fig.add_trace(go.Scatter(x=anom["ts_local"], y=anom["regions_active"],
-                                 mode="markers", name="день з аномалією",
-                                 marker=dict(color=BAD, size=6)))
+        fig.add_trace(go.Scatter(x=anom["ts_local"], y=anom["regions_active"], mode="markers",
+                                 name="день з аномалією", marker=dict(color=BAD, size=6)))
         fig.update_layout(title="Загальнонаціональна інтенсивність тривог (денний максимум)",
                           height=420, margin=dict(t=40), yaxis_title="Областей одночасно")
         show(fig)
 
-    # --- propagation ---
     with tabs[4]:
         prop = propagation().head(15).copy()
         st.caption(
             "Наскільки нова тривога в області A передвіщає нову тривогу в сусідній B упродовж 6 год. "
             "**lift** — у скільки разів частіше за випадковий збіг (база B). lift > 1 = реальний «коридор» загрози."
         )
+        prop["з області"] = prop["from"].map(geo.ua_name)
+        prop["в область"] = prop["to"].map(geo.ua_name)
         prop_disp = prop.assign(
             **{"follow_rate": (prop["follow_rate"] * 100).round(0),
-               "base_rate": (prop["base_rate"] * 100).round(0),
-               "lift": prop["lift"].round(2)}
+               "base_rate": (prop["base_rate"] * 100).round(0), "lift": prop["lift"].round(2)}
         )
         st.dataframe(
-            prop_disp[["from", "to", "n_from", "follow_rate", "base_rate", "lift"]]
-            .rename(columns={"from": "з області", "to": "→ в область", "n_from": "n подій",
-                             "follow_rate": "слідує, %", "base_rate": "база, %", "lift": "lift ×"}),
+            prop_disp[["з області", "в область", "n_from", "follow_rate", "base_rate", "lift"]]
+            .rename(columns={"n_from": "n подій", "follow_rate": "слідує, %", "base_rate": "база, %", "lift": "lift ×"}),
             use_container_width=True, hide_index=True, height=420,
         )
-        fig = px.bar(prop, x="lift", y=prop["from"] + " → " + prop["to"], orientation="h",
-                     title="Топ-коридори поширення (lift)", color="lift",
-                     color_continuous_scale=HEAT_SCALE)
+        fig = px.bar(prop, x="lift", y=prop["з області"] + " → " + prop["в область"], orientation="h",
+                     title="Топ-коридори поширення (lift)", color="lift", color_continuous_scale=HEAT_SCALE)
         fig.update_layout(height=460, margin=dict(t=40), yaxis_title=None, xaxis_title="lift ×")
         fig.update_yaxes(autorange="reversed")
         show(fig)
 
-    # --- OSINT layer ---
     with tabs[5]:
         render_osint_tab()
 
@@ -531,12 +641,13 @@ def render_osint_tab():
         geo_ev["k"] = geo_ev.groupby("region").cumcount()
         geo_ev["lat"] += (geo_ev["k"] % 3 - 1) * 0.10
         geo_ev["lon"] += (geo_ev["k"] // 3) * 0.12
+        geo_ev["область"] = geo_ev["region"].map(geo.ua_name)
         geo_ev["час"] = geo_ev["timestamp"].dt.tz_convert(config.DISPLAY_TZ).dt.strftime("%m-%d %H:%M")
-        fig = px.scatter_mapbox(
-            geo_ev, lat="lat", lon="lon", color="event_type",
-            color_discrete_map=EVENT_COLORS, hover_name="region",
-            hover_data={"час": True, "weapon": True, "lat": False, "lon": False, "k": False},
-            zoom=4.3, center={"lat": 48.4, "lon": 31.2}, height=520,
+        fig = px.scatter_map(
+            geo_ev, lat="lat", lon="lon", color="event_type", map_style="carto-darkmatter",
+            color_discrete_map=EVENT_COLORS, hover_name="область",
+            hover_data={"час": True, "weapon": True, "lat": False, "lon": False, "k": False, "event_type": False},
+            zoom=4.3, center={"lat": 48.5, "lon": 31.4}, height=520,
         )
         fig.update_traces(marker=dict(size=13))
         fig.update_layout(legend_title="Тип події")
@@ -559,7 +670,6 @@ def render_osint_tab():
 
 
 def fusion_view(ev: pd.DataFrame):
-    """Overlay OSINT events-per-hour with #regions under official alert."""
     series = get_series()
     inten = analysis.national_intensity(series)
     t0, t1 = ev["timestamp"].min(), ev["timestamp"].max()
@@ -567,22 +677,18 @@ def fusion_view(ev: pd.DataFrame):
     if win.empty:
         st.caption("Вікно подій поза межами наявних даних тривог — синтез недоступний для цього зразка.")
         return
-    ev_hourly = (
-        ev.assign(h=ev["timestamp"].dt.floor("h")).groupby("h").size().rename("events").reset_index()
-    )
+    ev_hourly = ev.assign(h=ev["timestamp"].dt.floor("h")).groupby("h").size().rename("events").reset_index()
     win = win.copy()
     win["ts_local"] = win["ts"].dt.tz_convert(config.DISPLAY_TZ)
     ev_hourly["ts_local"] = ev_hourly["h"].dt.tz_convert(config.DISPLAY_TZ)
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=win["ts_local"], y=win["regions_active"], name="областей під тривогою",
-                             mode="lines", line_color=ACCENT, fill="tozeroy",
-                             fillcolor="rgba(103,152,255,0.15)"))
+                             mode="lines", line_color=ACCENT, fill="tozeroy", fillcolor="rgba(103,152,255,0.15)"))
     fig.add_trace(go.Bar(x=ev_hourly["ts_local"], y=ev_hourly["events"], name="OSINT-подій/год",
                          marker_color=ASH, yaxis="y2", opacity=0.85))
     fig.update_layout(
-        height=360, margin=dict(t=30),
-        yaxis=dict(title="Областей під тривогою"),
+        height=360, margin=dict(t=30), yaxis=dict(title="Областей під тривогою"),
         yaxis2=dict(title="OSINT-подій", overlaying="y", side="right", showgrid=False),
         legend=dict(orientation="h", y=1.12),
     )
@@ -600,29 +706,20 @@ def main():
     inject_theme()
     eyebrow("ПОВІТРЯНІ ТРИВОГИ · УКРАЇНА · TSA + OSINT")
     st.title("Tryvoha Radar")
-    st.caption(
-        f"Аналіз часових рядів повітряних тривог + OSINT-збагачення з Telegram. "
-        f"Дані станом на {latest_ts_local()} (Київ). Виключно для захисного раннього попередження."
-    )
+    freshness_chip()
 
     with st.sidebar:
         eyebrow("РЕЖИМ")
-        mode = st.radio("Хто ви?", ["👤 Споживач", "🛠️ Аналітик"], label_visibility="collapsed")
+        mode = mode_switch()
         st.divider()
-        regions = geo.REGIONS
-        if mode.startswith("👤"):
-            region = st.selectbox("Ваша область", regions, index=regions.index("Kyiv City"))
+        regions = sorted(geo.REGIONS, key=geo.ua_name)
+        if mode == "consumer":
+            region = st.selectbox("Ваша область", regions,
+                                  index=regions.index("Kyiv City"), format_func=geo.ua_name)
         else:
-            region = st.selectbox("Фокус (необов'язково)", ["Уся Україна"] + regions)
-            region = None if region == "Уся Україна" else region
-        st.divider()
-        if get_live_regions() is not None:
-            st.success("🔴 Live: поточний стан з alerts.in.ua")
-        else:
-            st.info("🕒 Snapshot-режим. Live вмикається змінною `ALERTS_IN_UA_TOKEN` на деплої.")
-        st.caption("Джерело тривог: Vadimkin air-raid dataset. OSINT: Telegram (демо-зразок).")
+            region = st.selectbox("Фокус (необов'язково)", [None] + regions, format_func=geo.ua_name)
 
-    if mode.startswith("👤"):
+    if mode == "consumer":
         render_consumer(region)
     else:
         render_analyst(region)

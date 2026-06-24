@@ -9,7 +9,7 @@ statsmodels>=0.14      # optional: seasonal decomposition / daily series
 
 # Viz / UI
 streamlit>=1.30,<2.0
-plotly>=5.18
+plotly>=5.24          # go.Choroplethmap / px.scatter_map (MapLibre)
 
 # IO / config
 requests>=2.31
