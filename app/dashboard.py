@@ -19,7 +19,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from src import analysis, config, geo
+from src import analysis, config, geo, live
 from src.ai_extractor import load_events
 from src.transform import load_series
 
@@ -60,6 +60,13 @@ def get_metrics() -> dict:
     if config.MODEL_METRICS_JSON.exists():
         return json.loads(config.MODEL_METRICS_JSON.read_text())
     return {}
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def get_live_regions() -> set[str] | None:
+    """Oblasts under an air-raid alert right now (alerts.in.ua), or None if live
+    mode is off (no ALERTS_IN_UA_TOKEN / API error). 30s cache respects API limits."""
+    return live.get_live_active_regions()
 
 
 @st.cache_data
@@ -147,8 +154,16 @@ def render_consumer(region: str):
 
     row = risk_df[risk_df["region"] == region]
     risk = float(row["risk"].iloc[0]) if not row.empty else float("nan")
-    active_now = bool(series[series["region"] == region]["active"].iloc[-1])
     band, color = risk_band(risk) if risk == risk else ("—", "#9d9d9d")
+
+    # "Alert now": prefer real-time alerts.in.ua, fall back to latest snapshot hour.
+    live_regions = get_live_regions()
+    if live_regions is not None:
+        active_now = region in live_regions
+        live_badge = "🔴 LIVE · alerts.in.ua"
+    else:
+        active_now = bool(series[series["region"] == region]["active"].iloc[-1])
+        live_badge = "🕒 snapshot · історичний датасет"
 
     c1, c2 = st.columns([1, 1])
     with c1:
@@ -171,6 +186,7 @@ def render_consumer(region: str):
     with c2:
         st.metric("Рівень ризику", band)
         st.metric("Тривога зараз", "🔴 Активна" if active_now else "🟢 Немає")
+        st.caption(live_badge)
         rs = region_summary().set_index("region").loc[region]
         st.metric("Частка часу під тривогою (весь період)", f"{rs['alert_rate']:.0%}")
         if "avg_duration_min" in rs and pd.notna(rs["avg_duration_min"]):
@@ -472,6 +488,10 @@ def main():
             region = st.selectbox("Фокус (необов'язково)", ["Уся Україна"] + regions)
             region = None if region == "Уся Україна" else region
         st.divider()
+        if get_live_regions() is not None:
+            st.success("🔴 Live: поточний стан з alerts.in.ua")
+        else:
+            st.info("🕒 Snapshot-режим. Live вмикається змінною `ALERTS_IN_UA_TOKEN` на деплої.")
         st.caption("Джерело тривог: Vadimkin air-raid dataset. OSINT: Telegram (демо-зразок).")
 
     if mode.startswith("👤"):
