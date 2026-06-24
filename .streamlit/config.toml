@@ -1,0 +1,8 @@
+# Tryvoha Radar — "blueprint control room" theme (Dovetail design system)
+[theme]
+base = "dark"
+primaryColor = "#6798ff"            # cornflower accent (active states, sliders, radio)
+backgroundColor = "#0a0a0a"         # page ink
+secondaryBackgroundColor = "#1e1e1e" # card carbon
+textColor = "#ffffff"               # snow
+font = "sans serif"                 # Inter is loaded via CSS in app
