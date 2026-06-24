@@ -1,0 +1,25 @@
+# Core data
+pandas>=2.0,<3.0
+numpy>=1.24
+pyarrow>=12.0          # parquet engine
+
+# Modeling
+scikit-learn>=1.3
+statsmodels>=0.14      # optional: seasonal decomposition / daily series
+
+# Viz / UI
+streamlit>=1.30
+plotly>=5.18
+
+# IO / config
+requests>=2.31
+python-dotenv>=1.0
+
+# AI extraction (optional at runtime — pipeline has a no-key fallback)
+anthropic>=0.40
+
+# Telegram OSINT (stretch / live mode)
+telethon>=1.34
+
+# Tests
+pytest>=7.4

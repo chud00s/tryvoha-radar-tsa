@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Env / secrets
+.env
+*.session            # telethon session files
+
+# Large raw data (we keep small processed caches + samples in git)
+data/raw/*.csv
+!data/raw/.gitkeep
+
+# OS / editor
+.DS_Store
+.ipynb_checkpoints/
