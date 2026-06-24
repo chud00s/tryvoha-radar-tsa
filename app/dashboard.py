@@ -173,17 +173,11 @@ def get_live_regions() -> set[str] | None:
 
 @st.cache_data(show_spinner=False)
 def ukraine_geojson() -> dict:
-    """Oblast polygons keyed by canonical region in properties.canon.
-    Crimea (no data) dropped; Kyiv City has no polygon (folds into Kyivska)."""
+    """Oblast polygons (24 oblasts + Kyiv City) with the canonical region in
+    properties.canon. Source: geoBoundaries ADM1 (simplified); Crimea/Sevastopol
+    already removed and canon injected when the file was vendored."""
     gj = json.loads(GEOJSON_PATH.read_text(encoding="utf-8"))
-    feats = []
-    for f in gj["features"]:
-        canon = geo.normalize_region(f["properties"].get("name", ""))
-        if canon is None:
-            continue
-        f["properties"]["canon"] = canon
-        feats.append(f)
-    gj["features"] = feats
+    gj["features"] = [f for f in gj["features"] if f["properties"].get("canon")]
     return gj
 
 
@@ -360,13 +354,6 @@ def risk_map(risk_df: pd.DataFrame, active: set[str] | None = None) -> go.Figure
     gj = ukraine_geojson()
     active = set(active or set())
     df = risk_df.copy()
-    # Kyiv City has no polygon -> fold its risk into Kyivska oblast (max).
-    kyiv = df[df["region"].isin(["Kyiv City", "Kyivska oblast"])]["risk"]
-    if not kyiv.empty:
-        df.loc[df["region"] == "Kyivska oblast", "risk"] = kyiv.max()
-    if "Kyiv City" in active:
-        active = (active - {"Kyiv City"}) | {"Kyivska oblast"}
-    df = df[df["region"] != "Kyiv City"]
     canon = {f["properties"]["canon"] for f in gj["features"]}
     df = df[df["region"].isin(canon)]
     is_active = df["region"].isin(active)
