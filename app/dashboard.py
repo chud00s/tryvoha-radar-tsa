@@ -112,6 +112,10 @@ h2{ font-size:24px; } h3{ font-size:20px; }
 [class*="st-key-mode_btn_"] button[data-testid="stBaseButton-primary"]:hover,
 [class*="st-key-mode_btn_"] button[data-testid="stBaseButton-primary"]:focus{ background:#6798ff; color:#0a0a0a; border-color:#6798ff; }
 
+/* threat chips (active targets) */
+[class*="st-key-th_"] button{ white-space:nowrap; font-size:12px; padding:6px 8px; min-height:0; }
+[class*="st-key-th_"] button p{ font-size:12px; overflow:hidden; text-overflow:ellipsis; }
+
 /* freshness chip */
 .fresh{ display:inline-flex; align-items:center; gap:8px; font-family:'JetBrains Mono',monospace;
   font-size:12px; letter-spacing:.3px; color:#a7a7a7; background:#141414;
@@ -816,40 +820,48 @@ def _rocket_origin(region: str) -> tuple:
     return (lat, min(max(lon + 4.0, 38.5), 41.0))
 
 
-def _rocket_eta(origin: tuple, event_ts, top: int = 8) -> pd.DataFrame:
-    """Approx arrival time per oblast from a schematic origin (msg time + dist/speed)."""
-    rows = []
-    for r in geo.REGIONS:
-        c = geo.COORDS.get(r)
-        if not c:
-            continue
-        mins = _haversine_km(origin, c) / ROCKET_SPEED_KMH * 60
-        arr = (event_ts + pd.Timedelta(minutes=mins)).tz_convert(config.DISPLAY_TZ)
-        rows.append({"область": geo.ua_name(r), "через ~хв": int(round(mins)),
-                     "підліт (Київ)": arr.strftime("%H:%M")})
-    return pd.DataFrame(rows).sort_values("через ~хв").head(top)
-
-
 def _osint_threat_fig(gj, drones, rockets, impacts, intercepts, selected, show_air, show_hits):
     """Live threat layer: drones at location, rockets schematically in RF, impacts
     (red) / intercepts (green); a selected drone shades likely-next oblasts."""
     fig = go.Figure(_nodata_base(gj))
 
-    if selected and selected[0] == "drone":  # shade probable next oblasts
+    if selected and selected[0] == "drone":  # shade + label probable next oblasts
         cand = propagation()
-        cand = cand[cand["from"] == selected[1]["region"]]
+        cand = cand[(cand["from"] == selected[1]["region"]) & cand["to"].map(lambda t: t in geo.COORDS)]
         if not cand.empty:
             fig.add_trace(go.Choroplethmap(
                 geojson=gj, featureidkey="properties.canon", locations=cand["to"],
                 z=cand["follow_rate"], zmin=0, zmax=1, colorscale=[[0, "#16243f"], [1, ACCENT]],
-                showscale=False, marker=dict(opacity=0.55, line=dict(color=STEEL, width=0.4)),
+                showscale=False, marker=dict(opacity=0.6, line=dict(color=STEEL, width=0.4)),
                 customdata=[[geo.ua_name(t)] for t in cand["to"]],
                 hovertemplate="<b>%{customdata[0]}</b><br>ймовірність напрямку: %{z:.0%}<extra></extra>"))
-            top = cand.sort_values("follow_rate", ascending=False).iloc[0]
-            c0, c1 = geo.COORDS.get(selected[1]["region"]), geo.COORDS.get(top["to"])
+            c0 = geo.COORDS.get(selected[1]["region"])
+            topc = cand.sort_values("follow_rate", ascending=False).iloc[0]
+            c1 = geo.COORDS.get(topc["to"])
             if c0 and c1:
                 fig.add_trace(go.Scattermap(lat=[c0[0], c1[0]], lon=[c0[1], c1[1]], mode="lines",
                     line=dict(color=ACCENT, width=2), hoverinfo="skip", showlegend=False))
+            fig.add_trace(go.Scattermap(
+                lat=[geo.COORDS[t][0] for t in cand["to"]], lon=[geo.COORDS[t][1] for t in cand["to"]],
+                mode="text", text=[f"{int(round(p * 100))}%" for p in cand["follow_rate"]],
+                textfont=dict(color=SNOW, size=11), hoverinfo="skip", showlegend=False))
+
+    if selected and selected[0] == "rocket":  # per-oblast ETA shading + minute labels
+        origin = _rocket_origin(selected[1]["region"])
+        regs = [r for r in geo.REGIONS if geo.COORDS.get(r)]
+        mins = {r: _haversine_km(origin, geo.COORDS[r]) / ROCKET_SPEED_KMH * 60 for r in regs}
+        mx = max(mins.values()) or 1.0
+        fig.add_trace(go.Choroplethmap(
+            geojson=gj, featureidkey="properties.canon", locations=regs,
+            z=[mins[r] for r in regs], zmin=0, zmax=mx,
+            colorscale=[[0, BAD], [0.5, WARN], [1, "#16243f"]], showscale=False,
+            marker=dict(opacity=0.5, line=dict(color=STEEL, width=0.4)),
+            customdata=[[geo.ua_name(r), int(round(mins[r]))] for r in regs],
+            hovertemplate="<b>%{customdata[0]}</b><br>підліт ~%{customdata[1]} хв<extra></extra>"))
+        fig.add_trace(go.Scattermap(
+            lat=[geo.COORDS[r][0] for r in regs], lon=[geo.COORDS[r][1] for r in regs],
+            mode="text", text=[str(int(round(mins[r]))) for r in regs],
+            textfont=dict(color=SNOW, size=10), hoverinfo="skip", showlegend=False))
 
     if show_air:
         if not drones.empty:
@@ -922,34 +934,38 @@ def render_osint():
             st.success("Наразі активних пусків немає — показано прогноз ризику тривог по областях.")
             st.plotly_chart(risk_map(get_risk_now(), set()), use_container_width=True)
         else:
-            cc = st.columns([1.1, 1.3, 2])
-            show_air = cc[0].toggle("Ракети та дрони", value=True, key="osint_air")
-            show_hits = cc[1].toggle("Прильоти та збиття", value=True, key="osint_hits")
-            opts = {"— огляд усіх загроз —": None}
-            for _, d in drones.iterrows():
-                opts[f"Дрон · {geo.ua_name(d['region'])} · "
-                     f"{d['timestamp'].tz_convert(config.DISPLAY_TZ).strftime('%H:%M')}"] = ("drone", d)
-            for _, r in rockets.iterrows():
-                opts[f"Ракета · ціль {geo.ua_name(r['region'])} · "
-                     f"{r['timestamp'].tz_convert(config.DISPLAY_TZ).strftime('%H:%M')}"] = ("rocket", r)
-            sel = opts[cc[2].selectbox("Фокус на загрозі", list(opts.keys()), key="osint_sel")]
+            ctrl = st.columns([1, 1, 1.2])
+            show_air = ctrl[0].toggle("Ракети та дрони", value=True, key="osint_air")
+            show_hits = ctrl[1].toggle("Прильоти та збиття", value=True, key="osint_hits")
+            threats = ([("drone", row) for _, row in drones.iterrows()]
+                       + [("rocket", row) for _, row in rockets.iterrows()])
+            if ctrl[2].button("Скинути фокус", icon=":material/close:", key="osint_reset",
+                              use_container_width=True):
+                st.session_state["osint_focus_idx"] = None
+
+            st.caption("Активні цілі — натисніть, щоб побачити напрямок (дрон) або час підльоту (ракета):")
+            ch = st.columns(4)
+            for i, (kind, row) in enumerate(threats[:12]):
+                icon = ":material/flight:" if kind == "drone" else ":material/rocket_launch:"
+                t = row["timestamp"].tz_convert(config.DISPLAY_TZ).strftime("%H:%M")
+                short = geo.ua_name(row["region"]).replace(" область", "")
+                if ch[i % 4].button(f"{short} · {t}", key=f"th_{i}", icon=icon, use_container_width=True):
+                    st.session_state["osint_focus_idx"] = i
+
+            fi = st.session_state.get("osint_focus_idx")
+            sel = threats[fi] if (fi is not None and fi < len(threats)) else None
 
             st.plotly_chart(
                 _osint_threat_fig(gj, drones, rockets, impacts, intercepts, sel, show_air, show_hits),
                 use_container_width=True)
-
             if sel and sel[0] == "rocket":
-                st.caption("Орієнтовний час підльоту по областях (від часу повідомлення, "
-                           "швидкість ~800 км/год, схематично):")
-                st.dataframe(_rocket_eta(_rocket_origin(sel[1]["region"]), sel[1]["timestamp"]),
-                             use_container_width=True, hide_index=True, height=300)
+                st.caption("Ракета — числа на областях = орієнтовний час підльоту, хв "
+                           "(від часу повідомлення, ~800 км/год, схематично).")
             elif sel and sel[0] == "drone":
-                st.caption("Синім підсвічено ймовірні наступні області за нашою аналітикою поширення "
-                           "(коли немає точних даних Telegram про курс).")
+                st.caption("Дрон — підсвічено ймовірні наступні області (%, за аналітикою поширення).")
             else:
-                st.caption(f"Активні дрони/ракети за останні {ACTIVE_WINDOW_H} год. Оберіть ціль, щоб "
-                           "побачити напрямок (дрон) або час підльоту по областях (ракета). "
-                           "Прильоти — червоні, збиття — зелені.")
+                st.caption("Прильоти — червоні, збиття — зелені. Дрони — на місці фіксації, "
+                           "ракети — схематично з боку рф.")
 
     with col_feed:
         eyebrow("СТРІЧКА ПОДІЙ")
