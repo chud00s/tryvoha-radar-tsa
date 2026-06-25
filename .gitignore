@@ -24,5 +24,5 @@ data/raw/*.csv
 
 # Local-only Stage-2 submission artifact (full AI conversation log) + its generator.
 # Submitted via the application form — intentionally NOT published in the public repo.
-docs/AI_LOG.md
+docs/AI_LOG.*
 scripts/export_chat_log.py
