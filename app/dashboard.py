@@ -354,6 +354,21 @@ def _risk_phrase(r: float) -> str:
     return f"{band} · {round(r * 100)}%"
 
 
+def _nodata_base(gj: dict) -> go.Choroplethmap:
+    """Crimea & Sevastopol rendered as Ukrainian territory with no alert data
+    (temporarily occupied) — neutral fill so they read as Ukraine, not foreign."""
+    feats = [f for f in gj["features"] if f["properties"]["canon"] in geo.NODATA_REGIONS]
+    locs = [f["properties"]["canon"] for f in feats]
+    return go.Choroplethmap(
+        geojson={"type": "FeatureCollection", "features": feats},
+        featureidkey="properties.canon", locations=locs, z=[0] * len(locs),
+        colorscale=[[0, "#2f3a47"], [1, "#2f3a47"]], showscale=False,
+        marker=dict(opacity=0.6, line=dict(color=STEEL, width=0.4)),
+        customdata=[geo.ua_name(c) for c in locs],
+        hovertemplate="<b>%{customdata}</b><br>тимчасово окупована · немає даних<extra></extra>",
+    )
+
+
 def risk_map(risk_df: pd.DataFrame, active: set[str] | None = None) -> go.Figure:
     """Filled oblast choropleth of alert risk (next 6h); active oblasts (live)
     outlined in cornflower. Ukraine pops on a dark basemap; neighbours muted."""
@@ -377,6 +392,7 @@ def risk_map(risk_df: pd.DataFrame, active: set[str] | None = None) -> go.Figure
                       tickvals=[0, 0.5, 1], ticktext=["0%", "50%", "100%"],
                       tickfont=dict(color=FOG, size=11), outlinewidth=0, thickness=10, len=0.7, x=0.99),
     ))
+    fig.add_trace(_nodata_base(gj))
     act = df[is_active]
     if not act.empty:
         fig.add_trace(go.Choroplethmap(

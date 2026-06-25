@@ -76,6 +76,15 @@ UA_NAMES: dict[str, str] = {
 }
 
 
+# Temporarily occupied — part of Ukraine, but no alert data is reported there.
+# Shown on maps as Ukrainian territory (neutral "no data"), never as foreign.
+NODATA_REGIONS = ["Crimea", "Sevastopol"]
+UA_NAMES["Crimea"] = "АР Крим"
+UA_NAMES["Sevastopol"] = "Севастополь"
+COORDS["Crimea"] = (45.3, 34.4)
+COORDS["Sevastopol"] = (44.6, 33.5)
+
+
 def ua_name(region: str | None) -> str:
     """Ukrainian display name for a canonical region; None -> 'Уся Україна'."""
     if region is None:
