@@ -84,7 +84,7 @@ Tryvoha Radar **повністю працює офлайн без жодного
 
 ### Швидкий старт
 ```bash
-git clone <repo> && cd tryvoha-radar
+git clone <repo-url> && cd tryvoha-radar-tsa
 make setup        # створює .venv + ставить requirements.txt
 make app          # дашборд → http://localhost:8501 (працює одразу, без ключів)
 ```
@@ -98,9 +98,9 @@ cp .env.example .env   # .env у .gitignore — ніколи не комітит
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | LLM-екстракцію OSINT-подій (`claude-haiku-4-5`) замість regex-правил | `src/ai_extractor.py` | https://console.anthropic.com/ (≈ копійки) |
 | `ALERTS_IN_UA_TOKEN` | Реальний поточний стан тривог (інакше snapshot) | `src/live.py` | https://devs.alerts.in.ua/ (безкоштовний) |
-| `TELEGRAM_API_ID` | Live OSINT-інжест через Telethon (`python -m src.collector`) | `src/collector.py` | https://my.telegram.org/apps |
-| `TELEGRAM_API_HASH` | Пара до `API_ID` | `src/collector.py` | https://my.telegram.org/apps |
-| `TELEGRAM_CHANNELS` | Кома-розділені публічні канали моніторингу, напр. `chan1,chan2` | `src/collector.py` | публічні OSINT-канали |
+| `TELEGRAM_API_ID` | Live OSINT-інжест через Telethon (`python -m src.collector`) | `src/collector.py`, `src/ai_extractor.py` | https://my.telegram.org/apps |
+| `TELEGRAM_API_HASH` | Пара до `API_ID` | `src/collector.py`, `src/ai_extractor.py` | https://my.telegram.org/apps |
+| `TELEGRAM_CHANNELS` | Кома-розділені публічні канали моніторингу, напр. `chan1,chan2` | `src/collector.py`, `src/ai_extractor.py` | публічні OSINT-канали |
 
 > Усі лоадери читають через `python-dotenv` + `os.getenv`. На Streamlit Cloud додайте ці
 > ключі в **Secrets** (TOML) — Streamlit експонує їх і як змінні середовища, тож `os.getenv`

@@ -8,7 +8,10 @@ venv/
 
 # Env / secrets
 .env
-*.session            # telethon session files
+# Telethon session files = live, authenticated Telegram account credentials — never commit.
+# (Inline comments are NOT stripped in .gitignore, so the pattern must be on its own line.)
+*.session
+*.session-journal
 
 # Large raw data — downloaded CSV is ignored; geojson + sample_messages.json are committed
 data/raw/*.csv
@@ -16,3 +19,10 @@ data/raw/*.csv
 # OS / editor
 .DS_Store
 .ipynb_checkpoints/
+.idea/
+.vscode/
+
+# Local-only Stage-2 submission artifact (full AI conversation log) + its generator.
+# Submitted via the application form — intentionally NOT published in the public repo.
+docs/AI_LOG.md
+scripts/export_chat_log.py
