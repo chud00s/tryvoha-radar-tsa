@@ -10,9 +10,8 @@ venv/
 .env
 *.session            # telethon session files
 
-# Large raw data (we keep small processed caches + samples in git)
+# Large raw data — downloaded CSV is ignored; geojson + sample_messages.json are committed
 data/raw/*.csv
-!data/raw/.gitkeep
 
 # OS / editor
 .DS_Store

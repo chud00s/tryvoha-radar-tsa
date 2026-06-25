@@ -49,9 +49,12 @@ def build_features(series: pd.DataFrame, horizon: int = config.FORECAST_HORIZON_
     g_starts = df.groupby("region")["starts"]
     for lag in config.LAG_HOURS:
         df[f"lag_active_{lag}"] = g_active.shift(lag)
+    # group BEFORE rolling so windows never leak across region boundaries
     for w in config.ROLLING_WINDOWS:
-        df[f"roll_active_{w}"] = g_active.shift(1).rolling(w, min_periods=1).sum().reset_index(level=0, drop=True)
-        df[f"roll_starts_{w}"] = g_starts.shift(1).rolling(w, min_periods=1).sum().reset_index(level=0, drop=True)
+        df[f"roll_active_{w}"] = df.groupby("region")["active"].transform(
+            lambda s: s.shift(1).rolling(w, min_periods=1).sum())
+        df[f"roll_starts_{w}"] = df.groupby("region")["starts"].transform(
+            lambda s: s.shift(1).rolling(w, min_periods=1).sum())
     df["active_now"] = df["active"]
 
     # hours since the region's last active hour
@@ -80,10 +83,8 @@ def build_features(series: pd.DataFrame, horizon: int = config.FORECAST_HORIZON_
         nb_cnt_long, on=["ts", "region"], how="left"
     )
     # recent neighbour pressure (past 6h mean), per region
-    df["nb_active_6h"] = (
-        df.groupby("region")["nb_active_now"].shift(1).rolling(6, min_periods=1).mean()
-        .reset_index(level=0, drop=True)
-    )
+    df["nb_active_6h"] = df.groupby("region")["nb_active_now"].transform(
+        lambda s: s.shift(1).rolling(6, min_periods=1).mean())
 
     feature_cols = (
         ["hour", "dow", "month", "is_weekend", "is_night", "active_now",

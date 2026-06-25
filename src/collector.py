@@ -74,15 +74,19 @@ def run_live() -> None:
 
     @client.on(events.NewMessage(chats=channels))
     async def _handler(event):  # noqa: ANN001
-        text = (event.message.message or "").strip()
-        if not text:
-            return
-        msg = {"id": f"{event.chat_id}:{event.id}",
-               "date": event.message.date.isoformat(), "text": text}
-        df = extract_events([msg])
-        append_events(df)
-        e = df.iloc[0]
-        print(f"[collector] + {e['event_type']:9} {e['weapon']:11} {e['region']}")
+        try:
+            text = (event.message.message or "").strip()
+            if not text:
+                return
+            msg = {"id": f"{event.chat_id}:{event.id}",
+                   "date": event.message.date.isoformat(), "text": text}
+            df = extract_events([msg])
+            append_events(df)
+            if not df.empty:
+                e = df.iloc[0]
+                print(f"[collector] + {e['event_type']:9} {e['weapon']:11} {e['region']}")
+        except Exception as exc:  # one bad message must never kill the live stream
+            print(f"[collector] skipped a message: {exc!r}")
 
     print(f"[collector] listening to: {', '.join(channels)}")
     client.start()

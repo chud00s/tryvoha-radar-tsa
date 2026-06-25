@@ -204,7 +204,7 @@ def _extract_llm(messages: list[dict], batch_size: int = 15) -> list[dict]:
             region, alias = geo.find_region_mention(e.get("location") or m["text"])
             events.append(_make_event(
                 m, e.get("event_type", "інше"), e.get("weapon", "невідомо"),
-                e.get("location") or alias, region, float(e.get("confidence", 0.7)), "llm",
+                e.get("location") or alias, region, _to_conf(e.get("confidence", 0.7)), "llm",
             ))
     return events
 
@@ -212,11 +212,19 @@ def _extract_llm(messages: list[dict], batch_size: int = 15) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # Shared helpers + dispatcher
 # --------------------------------------------------------------------------- #
+def _to_conf(v) -> float:
+    """Clamp a model-supplied confidence to [0,1], default 0.7 on bad input."""
+    try:
+        return max(0.0, min(1.0, float(v)))
+    except (TypeError, ValueError):
+        return 0.7
+
+
 def _make_event(m, event_type, weapon, location_raw, region, confidence, method) -> dict:
     coords = geo.region_coords(region) if region else None
     return {
         "id": m["id"],
-        "timestamp": pd.to_datetime(m["date"], utc=True),
+        "timestamp": pd.to_datetime(m.get("date"), utc=True, errors="coerce"),
         "event_type": event_type if event_type in EVENT_TYPES else "інше",
         "weapon": weapon if weapon in WEAPONS else "невідомо",
         "location_raw": location_raw or "",
@@ -242,7 +250,10 @@ def extract_events(messages: list[dict], prefer_llm: bool = True) -> pd.DataFram
     else:
         print("[ai_extractor] no ANTHROPIC_API_KEY -> using rule-based fallback")
         events = _extract_rules(messages)
-    return pd.DataFrame(events).sort_values("timestamp").reset_index(drop=True)
+    df = pd.DataFrame(events)
+    if df.empty:  # no messages / all dropped -> well-formed empty frame, no crash
+        return df
+    return df.sort_values("timestamp").reset_index(drop=True)
 
 
 def save_events(df: pd.DataFrame) -> None:
@@ -253,7 +264,7 @@ def save_events(df: pd.DataFrame) -> None:
 def load_events() -> pd.DataFrame:
     if config.EVENTS_PARQUET.exists():
         df = pd.read_parquet(config.EVENTS_PARQUET)
-        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
         return df
     return pd.DataFrame()
 

@@ -77,15 +77,17 @@ def _metrics(y_true: np.ndarray, p: np.ndarray) -> dict:
 
 
 def _climatology_baseline(train: pd.DataFrame, test: pd.DataFrame) -> np.ndarray:
-    rate = train.groupby(["region", "hour"], observed=True)["y"].mean()
+    rate = (train.groupby(["region", "hour"], observed=True)["y"].mean()
+            .rename("rate").reset_index())
     overall = train["y"].mean()
-    idx = list(zip(test["region"].astype(str), test["hour"]))
-    return np.array([rate.get(k, overall) for k in idx])
+    merged = test[["region", "hour"]].merge(rate, on=["region", "hour"], how="left")
+    return merged["rate"].fillna(overall).to_numpy()
 
 
-def backtest() -> dict:
-    print("[forecast] building features ...")
-    feat = build_features(load_series())
+def backtest(feat: "pd.DataFrame | None" = None) -> dict:
+    if feat is None:
+        print("[forecast] building features ...")
+        feat = build_features(load_series())
     train_fit, valid, test, test_start = _time_splits(feat)
     train_all = pd.concat([train_fit, valid])
     print(f"[forecast] train={len(train_all):,} valid={len(valid):,} test={len(test):,}")
@@ -110,7 +112,8 @@ def backtest() -> dict:
 
     results = {
         "horizon_h": config.FORECAST_HORIZON_HOURS,
-        "n_train": int(len(train_all)),
+        "n_train": int(len(train_fit)),
+        "n_calibration": int(len(valid)),
         "n_test": int(len(test)),
         "test_start": str(test_start),
         "test_end": str(test["ts"].max()),
@@ -141,11 +144,16 @@ def backtest() -> dict:
     return results
 
 
-def predict_current_risk() -> pd.DataFrame:
-    """Train on all history, forecast next-H risk for the latest hour per region."""
-    feat = build_features(load_series())
-    train_fit, valid, _test, _ = _time_splits(feat, test_frac=0.0, valid_frac=0.15)
-    model, iso = _fit_model(train_fit, valid)
+def predict_current_risk(feat: "pd.DataFrame | None" = None) -> pd.DataFrame:
+    """Forecast next-H risk for the latest hour per region. Deploy path: fit the
+    GBM on ALL labelled history (incl. the freshest attack patterns); calibrate
+    isotonic on a recent time-slice."""
+    if feat is None:
+        feat = build_features(load_series())
+    labelled = feat[feat["y"].notna()]
+    tmin, tmax = labelled["ts"].min(), labelled["ts"].max()
+    cal = labelled[labelled["ts"] >= tmin + (tmax - tmin) * 0.85]
+    model, iso = _fit_model(labelled, cal)
 
     latest = feat.sort_values("ts").groupby("region", observed=True).tail(1).copy()
     latest["risk"] = _predict(model, iso, latest)
@@ -164,10 +172,12 @@ def main(argv: list[str] | None = None) -> int:
     if not (args.backtest or args.predict):
         args.backtest = args.predict = True  # default: both
 
+    # Build the (heavy) feature frame once when running both stages.
+    feat = build_features(load_series()) if (args.backtest and args.predict) else None
     if args.backtest:
-        backtest()
+        backtest(feat)
     if args.predict:
-        predict_current_risk()
+        predict_current_risk(feat)
     return 0
 
 

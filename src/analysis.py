@@ -208,7 +208,8 @@ def propagation_lead_lag(series: pd.DataFrame, max_lag_h: int = 6) -> pd.DataFra
             b_events = starts_wide[b].to_numpy().astype(bool)
             min_lag = np.full(len(a_idx), np.inf)
             for lag in range(max_lag_h, 0, -1):
-                shifted = np.r_[np.zeros(lag, dtype=bool), b_events[:-lag]]
+                # B starts `lag` hours AFTER A -> shifted[i] = b_events[i + lag]
+                shifted = np.r_[b_events[lag:], np.zeros(lag, dtype=bool)]
                 min_lag[a_idx & shifted] = lag
             leads = min_lag[np.isfinite(min_lag)]
             hits = int(len(leads))

@@ -394,7 +394,7 @@ def risk_map(risk_df: pd.DataFrame, active: set[str] | None = None) -> go.Figure
     fig = go.Figure(go.Choroplethmap(
         geojson=gj, featureidkey="properties.canon",
         locations=df["region"], z=df["risk"], zmin=0, zmax=1,
-        colorscale=[[0.0, GOOD], [0.5, WARN], [1.0, BAD]],
+        colorscale=[[0.0, GOOD], [0.34, GOOD], [0.34, WARN], [0.67, WARN], [0.67, BAD], [1.0, BAD]],
         marker=dict(line=dict(color=STEEL, width=0.6), opacity=0.82),
         customdata=df[["name_ua", "label"]].to_numpy(),
         hovertemplate="<b>%{customdata[0]}</b><br>%{customdata[1]}<extra></extra>",
@@ -473,6 +473,12 @@ def render_consumer(region: str):
         st.metric("Рівень ризику", band)
         if live_regions is not None:   # only claim "now" in live mode
             st.metric("Тривога зараз", "Активна" if region in live_regions else "Немає")
+        with st.popover(":material/info: Що означає це число"):
+            st.markdown(
+                f"Це **оцінка моделі** — ймовірність повітряної тривоги у вашій області в "
+                f"наступні {get_metrics().get('horizon_h', config.FORECAST_HORIZON_HOURS)} год за "
+                "історичними даними (волонтерський датасет). Це **не офіційне сповіщення** — "
+                "завжди реагуйте на реальні сирени.")
 
     render_action_card(band, color)
 
@@ -481,7 +487,8 @@ def render_consumer(region: str):
     st.markdown("#### :material/map: Поточний ризик по Україні")
     if not risk_df.empty:
         st.plotly_chart(risk_map(risk_df, _active_set(risk_df)), use_container_width=True)
-        cap = "Колір — ймовірність тривоги в області в наступні 6 год."
+        h = get_metrics().get("horizon_h", config.FORECAST_HORIZON_HOURS)
+        cap = f"Колір — ймовірність тривоги в області в наступні {h} год."
         if live_regions is not None:
             cap += " Синім контуром — області з діючою тривогою."
         st.caption(cap)
@@ -524,7 +531,8 @@ def render_analyst(region: str | None):
                     "область": st.column_config.TextColumn("область"),
                     "risk": st.column_config.NumberColumn(
                         "ризик, %", format="%.1f",
-                        help="Прогноз: ймовірність тривоги в області в наступні 6 год."),
+                        help=f"Прогноз: ймовірність тривоги в області в наступні "
+                             f"{get_metrics().get('horizon_h', config.FORECAST_HORIZON_HOURS)} год."),
                     "active_now": st.column_config.CheckboxColumn(
                         "тривога на час даних",
                         help="Чи була область під тривогою на момент останнього зрізу даних. "
@@ -658,8 +666,9 @@ def render_analyst(region: str | None):
         m2.metric("У середньому / тиждень", f"{len(eps) / weeks:.1f}",
                   help="Як часто трапляються масовані атаки. У цій війні вони регулярні — "
                        "це не статистична рідкість.")
-        m3.metric("Найбільший епізод",
-                  f"{int(eps['peak_regions'].max())} обл. · {int(eps['duration_h'].max())} год",
+        biggest = (f"{int(eps['peak_regions'].max())} обл. · {int(eps['duration_h'].max())} год"
+                   if not eps.empty else "—")
+        m3.metric("Найбільший епізод", biggest,
                   help="Пік одночасно активних областей і найбільша тривалість серед усіх епізодів.")
 
         with st.popover(":material/info: Що таке масована атака і як це читати"):
@@ -840,9 +849,9 @@ def _osint_shading(gj, selected):
     colors = {c: "#1b2230" for c in canons}
     labels = {}
     if selected and selected[0] == "drone":
-        cand = propagation()
-        probs = dict(zip(cand[cand["from"] == selected[1]["region"]]["to"],
-                         cand[cand["from"] == selected[1]["region"]]["follow_rate"]))
+        sub = propagation()
+        sub = sub[sub["from"] == selected[1]["region"]]
+        probs = dict(zip(sub["to"], sub["follow_rate"]))
         colors = {c: "#10141c" for c in canons}
         for c, p in probs.items():
             if c in colors:
@@ -959,8 +968,12 @@ def render_osint():
     col_map, col_feed = st.columns([3, 2])
     with col_map:
         if not active:
-            st.success("Наразі активних пусків немає — показано прогноз ризику тривог по областях.")
-            st.plotly_chart(risk_map(get_risk_now(), set()), use_container_width=True)
+            rn = get_risk_now()
+            if rn.empty:
+                st.warning("Немає прогнозу. Запустіть `python -m src.forecast --predict`.")
+            else:
+                st.success("Наразі активних пусків немає — показано прогноз ризику тривог по областях.")
+                st.plotly_chart(risk_map(rn, set()), use_container_width=True)
         else:
             ctrl = st.columns(2)
             show_air = ctrl[0].toggle("Ракети та дрони", value=True, key="osint_air")
@@ -989,7 +1002,8 @@ def render_osint():
         if as_table:
             f = feed.copy()
             f["час"] = f["timestamp"].dt.tz_convert(config.DISPLAY_TZ).dt.strftime("%m-%d %H:%M")
-            f["область"] = f["region"].map(geo.ua_name)
+            f["область"] = f["region"].map(lambda r: geo.ua_name(r) if r else "")
+            f["weapon"] = f["weapon"].where(f["weapon"] != "невідомо", "")
             st.dataframe(f[["час", "event_type", "weapon", "область"]]
                          .rename(columns={"event_type": "подія", "weapon": "засіб"}),
                          use_container_width=True, hide_index=True, height=560)
