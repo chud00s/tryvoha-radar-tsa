@@ -25,7 +25,7 @@ from src import analysis, config, geo, live
 from src.ai_extractor import load_events
 from src.transform import load_series
 
-st.set_page_config(page_title="Tryvoha Radar", page_icon="🛰️", layout="wide")
+st.set_page_config(page_title="Tryvoha Radar", page_icon=":material/radar:", layout="wide")
 
 # --- design tokens ----------------------------------------------------------
 ACCENT = "#6798ff"   # cornflower
@@ -42,7 +42,11 @@ GOOD, WARN, BAD = "#54a24b", "#f5a623", "#e5484d"   # semantic danger scale
 HEAT_SCALE = [[0.0, "#101319"], [0.4, "#21407a"], [0.7, "#3f6fcf"], [1.0, ACCENT]]
 
 GEOJSON_PATH = config.DATA_RAW / "ua_oblasts.geojson"
-MODES = [("consumer", "👤 Споживач"), ("analyst", "🛠️ Аналітик"), ("osint", "🛰️ OSINT · Telegram")]
+MODES = [
+    ("consumer", "Споживач", ":material/person:"),
+    ("analyst", "Аналітик", ":material/analytics:"),
+    ("osint", "OSINT · Telegram", ":material/radar:"),
+]
 THREAT_TYPES = ["пуск", "рух", "загроза"]
 ACTIVE_WINDOW_H = 12
 
@@ -255,9 +259,9 @@ def mode_switch() -> str:
     no highlight lag, no explicit st.rerun()."""
     if "mode" not in st.session_state:
         st.session_state.mode = "consumer"
-    for key, label in MODES:
+    for key, label, icon in MODES:
         active = st.session_state.mode == key
-        st.button(label, key=f"mode_btn_{key}",
+        st.button(label, key=f"mode_btn_{key}", icon=icon,
                   type="primary" if active else "secondary", use_container_width=True,
                   on_click=_set_mode, args=(key,))
     return st.session_state.mode
@@ -403,7 +407,7 @@ def _active_set(risk_df: pd.DataFrame) -> set[str]:
 # Consumer mode — actionable, minimal
 # --------------------------------------------------------------------------- #
 def render_consumer(region: str):
-    st.subheader(f"🚦 Ризик для: {geo.ua_name(region)}")
+    st.subheader(f":material/warning: Ризик для: {geo.ua_name(region)}")
     risk_df = get_risk_now()
     row = risk_df[risk_df["region"] == region]
     risk = float(row["risk"].iloc[0]) if not row.empty else float("nan")
@@ -434,13 +438,13 @@ def render_consumer(region: str):
     with c2:
         st.metric("Рівень ризику", band)
         if live_regions is not None:   # only claim "now" in live mode
-            st.metric("Тривога зараз", "🔴 Активна" if region in live_regions else "🟢 Немає")
+            st.metric("Тривога зараз", "Активна" if region in live_regions else "Немає")
 
     render_action_card(band, color)
 
     st.divider()
     eyebrow("ПРОГНОЗ · ПО ОБЛАСТЯХ")
-    st.markdown("#### 🗺️ Поточний ризик по Україні")
+    st.markdown("#### :material/map: Поточний ризик по Україні")
     if not risk_df.empty:
         st.plotly_chart(risk_map(risk_df, _active_set(risk_df)), use_container_width=True)
         cap = "Колір — ймовірність тривоги в області в наступні 6 год."
@@ -453,10 +457,11 @@ def render_consumer(region: str):
 # Analyst mode
 # --------------------------------------------------------------------------- #
 def render_analyst(region: str | None):
-    st.subheader(f"🛠️ Аналітика — {geo.ua_name(region)}")
+    st.subheader(f":material/analytics: Аналітика — {geo.ua_name(region)}")
     tabs = st.tabs([
-        "🗺️ Карта ризику", "📈 Патерни", "🎯 Якість моделі",
-        "🚨 Масовані атаки", "🔗 Поширення",
+        ":material/map: Карта ризику", ":material/insights: Патерни",
+        ":material/verified: Якість моделі", ":material/crisis_alert: Масовані атаки",
+        ":material/hub: Поширення",
     ])
 
     with tabs[0]:
@@ -686,7 +691,7 @@ def threat_map(risk_df: pd.DataFrame, rec: pd.DataFrame, vectors: list[dict]) ->
 
 @st.fragment(run_every="30s")
 def render_osint():
-    st.subheader("🛰️ OSINT — жива карта загроз")
+    st.subheader(":material/radar: OSINT — жива карта загроз")
     method = ""
     ev = get_events()
     if ev.empty:
