@@ -203,8 +203,8 @@ def heatmap(region: str | None) -> pd.DataFrame:
 
 
 @st.cache_data
-def intensity() -> pd.DataFrame:
-    return analysis.detect_mass_attacks(get_series())
+def episodes() -> pd.DataFrame:
+    return analysis.mass_attack_episodes(get_series())
 
 
 @st.cache_data
@@ -483,9 +483,19 @@ def render_analyst(region: str | None):
             d = risk_df.copy()
             d["область"] = d["region"].map(geo.ua_name)
             d["risk"] = (d["risk"] * 100).round(1)
+            d["active_now"] = d["active_now"].astype(bool)
             st.dataframe(
-                d[["область", "risk", "active_now"]]
-                .rename(columns={"risk": "ризик, %", "active_now": "активна (ост. год.)"}),
+                d[["область", "risk", "active_now"]],
+                column_config={
+                    "область": st.column_config.TextColumn("область"),
+                    "risk": st.column_config.NumberColumn(
+                        "ризик, %", format="%.1f",
+                        help="Прогноз: ймовірність тривоги в області в наступні 6 год."),
+                    "active_now": st.column_config.CheckboxColumn(
+                        "тривога на час даних",
+                        help="Чи була область під тривогою на момент останнього зрізу даних. "
+                             "Історичні дані оновлюються раз на добу, тож це стан станом на дату зрізу, не «зараз»."),
+                },
                 use_container_width=True, hide_index=True, height=300,
             )
 
@@ -521,12 +531,31 @@ def render_analyst(region: str | None):
                 f"(строго пізніших за трейн). Ціль: тривога в наступні {m['horizon_h']} год. "
                 f"Базова частка позитивів: {m['positive_rate_test']:.0%}."
             )
+            with st.popover(":material/info: Як читати цей розділ"):
+                st.markdown(
+                    "Прогноз перевірено на **пізнішому періоді**, якого модель не бачила (чесний бектест).\n\n"
+                    "- **ROC-AUC / PR-AUC** — якість розрізнення «буде / не буде тривога» (більше = краще).\n"
+                    "- **Brier** — точність калібрування ймовірностей (менше = краще).\n"
+                    "- **Базлайни**: *climatology* (історична норма по годині та області) і *persistence* "
+                    "(зараз = далі). Модель цінна, лише якщо їх перевершує.\n\n"
+                    "**Як використати.** Якщо модель калібрована й б'є базлайни — числу ризику можна довіряти "
+                    "як ймовірності та будувати на ньому сповіщення й графік чергувань."
+                )
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("ROC-AUC (модель)", f"{m['model']['roc_auc']:.3f}",
-                      f"{m['model']['roc_auc'] - m['baseline_climatology']['roc_auc']:+.3f} vs baseline")
-            c2.metric("PR-AUC (модель)", f"{m['model']['pr_auc']:.3f}")
-            c3.metric("Brier (модель)", f"{m['model']['brier']:.3f}", "менше = краще", delta_color="off")
-            c4.metric("Climatology ROC-AUC", f"{m['baseline_climatology']['roc_auc']:.3f}")
+                      f"{m['model']['roc_auc'] - m['baseline_climatology']['roc_auc']:+.3f} vs baseline",
+                      help="Здатність відрізнити годину з тривогою від години без неї. "
+                           "0.5 = випадково, 1.0 = ідеально. 0.88 ≈ у 88% пар модель дає вищий ризик "
+                           "саме годині з тривогою.")
+            c2.metric("PR-AUC (модель)", f"{m['model']['pr_auc']:.3f}",
+                      help="Точність на рідких подіях — наскільки добре ловимо саме години з тривогою "
+                           "(а не загальну точність). Важлива, коли ціна пропуску висока.")
+            c3.metric("Brier (модель)", f"{m['model']['brier']:.3f}", "менше = краще", delta_color="off",
+                      help="Похибка калібрування (0 = ідеально). Якщо кажемо «30%», подія має ставатися "
+                           "приблизно у 30% таких випадків.")
+            c4.metric("Climatology ROC-AUC", f"{m['baseline_climatology']['roc_auc']:.3f}",
+                      help="Базлайн «історична норма»: середня частота тривог для цієї області й години доби. "
+                           "Модель мусить його перевершувати, інакше не дає нічого понад сезонність.")
 
             comp = pd.DataFrame({
                 "модель": ["Tryvoha Radar", "Climatology", "Persistence"],
@@ -542,6 +571,13 @@ def render_analyst(region: str | None):
 
             c1, c2 = st.columns(2)
             with c1:
+                with st.popover(":material/info: Калібрування — як читати"):
+                    st.markdown(
+                        "Чи відповідають прогнозовані ймовірності реальності. Точки **на діагоналі** = "
+                        "прогноз збігається з фактичною частотою. Вище діагоналі — модель недооцінює ризик, "
+                        "нижче — переоцінює.\n\n**Як використати.** Підтверджує, чи можна довіряти числу % "
+                        "як справжній ймовірності."
+                    )
                 rel = m["reliability"]
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines",
@@ -552,6 +588,13 @@ def render_analyst(region: str | None):
                                   xaxis_title="Прогнозована ймовірність", yaxis_title="Фактична частка")
                 show(fig)
             with c2:
+                with st.popover(":material/info: ROC-крива — як читати"):
+                    st.markdown(
+                        "Компроміс між **виявленими тривогами** (TPR, вісь Y) і **хибними тривогами** "
+                        "(FPR, вісь X) за різних порогів. Чим ближче крива до лівого-верхнього кута, тим "
+                        "краще; діагональ = випадково.\n\n**Як використати.** Обрати поріг сповіщення під "
+                        "прийнятну для вас частку хибних тривог."
+                    )
                 roc = m["roc_curve"]
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines",
@@ -562,42 +605,98 @@ def render_analyst(region: str | None):
                 show(fig)
 
     with tabs[3]:
-        inten = intensity().copy()
-        inten["ts_local"] = inten["ts"].dt.tz_convert(config.DISPLAY_TZ)
-        daily = (
-            inten.set_index("ts_local").resample("D")
-            .agg(regions_active=("regions_active", "max"), anomaly=("is_anomaly", "max")).reset_index()
-        )
-        n_anom = int(inten["is_anomaly"].sum())
-        st.caption(
-            f"Аномалії = години, коли кількість одночасно активних областей різко перевищує "
-            f"ковзний baseline (z ≥ 3). Виявлено **{n_anom}** таких годин — сигнатура масованих атак."
-        )
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=daily["ts_local"], y=daily["regions_active"],
-                                 mode="lines", name="макс. областей/день", line_color=ACCENT))
-        anom = daily[daily["anomaly"] == 1]
-        fig.add_trace(go.Scatter(x=anom["ts_local"], y=anom["regions_active"], mode="markers",
-                                 name="день з аномалією", marker=dict(color=BAD, size=6)))
-        fig.update_layout(title="Загальнонаціональна інтенсивність тривог (денний максимум)",
-                          height=420, margin=dict(t=40), yaxis_title="Областей одночасно")
+        eps = episodes().copy()
+        span = get_series()["ts"]
+        weeks = max(1.0, (span.max() - span.min()).days / 7)
+        eps["start_local"] = eps["start"].dt.tz_convert(config.DISPLAY_TZ)
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Масованих епізодів", f"{len(eps)}",
+                  help="Епізод — проміжок, коли одночасно ≥18 із 24 областей під тривогою "
+                       "(сусідні години обʼєднано). Ознака загальнонаціонального удару.")
+        m2.metric("У середньому / тиждень", f"{len(eps) / weeks:.1f}",
+                  help="Як часто трапляються масовані атаки. У цій війні вони регулярні — "
+                       "це не статистична рідкість.")
+        m3.metric("Найбільший епізод",
+                  f"{int(eps['peak_regions'].max())} обл. · {int(eps['duration_h'].max())} год",
+                  help="Пік одночасно активних областей і найбільша тривалість серед усіх епізодів.")
+
+        with st.popover(":material/info: Що таке масована атака і як це читати"):
+            st.markdown(
+                "**Що це.** Масована атака — коли одночасно під тривогою щонайменше **18 із 24 областей** "
+                "(~70% країни). Сигнатура загальнонаціонального удару (балістика, МіГ-31, великі рої Shahed), "
+                "на відміну від локальних прифронтових тривог.\n\n"
+                "**Чому їх багато.** У цій війні такі епізоди **часті** (≈2–3 на тиждень), тож це **не аномалія-"
+                "рідкість**, а регулярна категорія масштабних загроз.\n\n"
+                "**Як трактувати.** Тренд за місяцями показує ескалацію/деескалацію; найбільші епізоди "
+                "(за к-тю областей і тривалістю) — це ночі наймасштабніших атак.\n\n"
+                "**Як використати.** Планування готовності й чергувань, кореляція з ушкодженнями "
+                "інфраструктури, оцінка інтенсивності повітряної кампанії в часі."
+            )
+
+        eps["month"] = eps["start_local"].dt.strftime("%Y-%m")
+        by_month = eps.groupby("month").size().rename("к-ть").reset_index()
+        fig = px.bar(by_month, x="month", y="к-ть", title="Масовані атаки за місяцями")
+        fig.update_traces(marker_color=ACCENT)
+        fig.update_layout(height=320, margin=dict(t=40), xaxis_title=None, yaxis_title="епізодів/міс")
         show(fig)
+
+        st.caption("Найбільші епізоди (за кількістю областей і тривалістю):")
+        top = eps.sort_values(["peak_regions", "duration_h", "start"],
+                              ascending=[False, False, False]).head(15).copy()
+        top["дата (Київ)"] = top["start_local"].dt.strftime("%Y-%m-%d %H:%M")
+        st.dataframe(
+            top[["дата (Київ)", "peak_regions", "duration_h"]],
+            column_config={
+                "peak_regions": st.column_config.NumberColumn(
+                    "пік областей", help="Максимум областей одночасно під тривогою в епізоді (з 24)."),
+                "duration_h": st.column_config.NumberColumn(
+                    "тривалість, год", help="Скільки тривав епізод масштабної тривоги."),
+            },
+            use_container_width=True, hide_index=True, height=360,
+        )
 
     with tabs[4]:
         prop = propagation().head(15).copy()
-        st.caption(
-            "Наскільки нова тривога в області A передвіщає нову тривогу в сусідній B упродовж 6 год. "
-            "**lift** — у скільки разів частіше за випадковий збіг (база B). lift > 1 = реальний «коридор» загрози."
-        )
+        with st.popover(":material/info: Як читати поширення"):
+            st.markdown(
+                "Чи **перетікає** загроза між сусідніми областями. Для пари **A → B** дивимось, як часто "
+                "нова тривога в A супроводжується новою тривогою в B упродовж **6 год**, і порівнюємо з "
+                "випадковим збігом.\n\n"
+                "- **lift > 1** — реальний «коридор» поширення (загроза справді йде далі).\n"
+                "- **lift ≈ 1** — просто збіг.\n\n"
+                "**Як використати.** Якщо в A почалася тривога — куди ймовірно піде далі й за який час "
+                "(«запас, год»). Це основа прогнозу наступної області на вкладці «Загрози зараз»."
+            )
         prop["з області"] = prop["from"].map(geo.ua_name)
         prop["в область"] = prop["to"].map(geo.ua_name)
         prop_disp = prop.assign(
             **{"follow_rate": (prop["follow_rate"] * 100).round(0),
-               "base_rate": (prop["base_rate"] * 100).round(0), "lift": prop["lift"].round(2)}
+               "base_rate": (prop["base_rate"] * 100).round(0),
+               "lift": prop["lift"].round(2), "lead_h": prop["lead_h"].round(0)}
         )
         st.dataframe(
-            prop_disp[["з області", "в область", "n_from", "follow_rate", "base_rate", "lift"]]
-            .rename(columns={"n_from": "n подій", "follow_rate": "слідує, %", "base_rate": "база, %", "lift": "lift ×"}),
+            prop_disp[["з області", "в область", "n_from", "follow_rate", "base_rate", "lift", "lead_h"]],
+            column_config={
+                "з області": st.column_config.TextColumn(
+                    "з області", help="Область, де почалася тривога (джерело)."),
+                "в область": st.column_config.TextColumn(
+                    "→ в область", help="Сусідня область, куди загроза може поширитись."),
+                "n_from": st.column_config.NumberColumn(
+                    "n подій", help="Скільки разів у джерелі починалася нова тривога — база статистики."),
+                "follow_rate": st.column_config.NumberColumn(
+                    "слідує, %", format="%d",
+                    help="У якій частці цих випадків у сусідній області теж почалася тривога впродовж 6 год."),
+                "base_rate": st.column_config.NumberColumn(
+                    "база, %", format="%d",
+                    help="Фонова частота: скільки було б випадково (нова тривога в сусіда за будь-яке 6-год вікно)."),
+                "lift": st.column_config.NumberColumn(
+                    "lift ×", format="%.2f",
+                    help="У скільки разів «слідує» перевищує випадковість. >1 = реальний коридор поширення."),
+                "lead_h": st.column_config.NumberColumn(
+                    "запас, год", format="%d",
+                    help="Типовий час від тривоги в джерелі до тривоги в сусіда (медіана)."),
+            },
             use_container_width=True, hide_index=True, height=420,
         )
         fig = px.bar(prop, x="lift", y=prop["з області"] + " → " + prop["в область"], orientation="h",

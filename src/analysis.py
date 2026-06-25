@@ -99,6 +99,42 @@ def national_intensity(series: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def mass_attack_episodes(
+    series: pd.DataFrame, min_regions: int = 18, gap_h: int = 3
+) -> pd.DataFrame:
+    """Discrete nationwide-attack episodes: stretches where >= ``min_regions``
+    oblasts are simultaneously under alert (gaps <= ``gap_h`` merged into one
+    episode). Returns start, end, duration_h, peak_regions — far more
+    interpretable than per-hour flags.
+    """
+    inten = national_intensity(series).sort_values("ts")
+    vals = inten["regions_active"].to_numpy()
+    idx = inten["ts"].to_numpy()
+    gap = np.timedelta64(gap_h, "h")
+    over = vals >= min_regions
+
+    eps, start_i, last_i, peak = [], None, None, 0
+    for i in range(len(vals)):
+        if over[i]:
+            if start_i is None:
+                start_i, peak = i, vals[i]
+            last_i = i
+            peak = max(peak, vals[i])
+        elif start_i is not None and (idx[i] - idx[last_i]) > gap:
+            eps.append((idx[start_i], idx[last_i], int(peak)))
+            start_i, peak = None, 0
+    if start_i is not None:
+        eps.append((idx[start_i], idx[last_i], int(peak)))
+
+    df = pd.DataFrame(eps, columns=["start", "end", "peak_regions"])
+    if df.empty:
+        return df
+    df["start"] = pd.to_datetime(df["start"], utc=True)
+    df["end"] = pd.to_datetime(df["end"], utc=True)
+    df["duration_h"] = ((df["end"] - df["start"]) / pd.Timedelta(hours=1) + 1).astype(int)
+    return df
+
+
 def detect_mass_attacks(
     series: pd.DataFrame, window_hours: int = 24 * 14, z_thresh: float = 3.0
 ) -> pd.DataFrame:
