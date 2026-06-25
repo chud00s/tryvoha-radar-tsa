@@ -135,15 +135,18 @@ def propagation_lead_lag(series: pd.DataFrame, max_lag_h: int = 6) -> pd.DataFra
         n_a = int(a_events.sum())
         if n_a == 0:
             continue
+        a_idx = a_events.to_numpy().astype(bool)
         for b in sorted(NEIGHBORS[a]):
-            # did B start within 1..max_lag_h hours after an A start?
-            follow = np.zeros(len(a_events), dtype=bool)
+            # smallest lag (1..max_lag_h h) at which B started after an A start
             b_events = starts_wide[b].to_numpy().astype(bool)
-            for lag in range(1, max_lag_h + 1):
+            min_lag = np.full(len(a_idx), np.inf)
+            for lag in range(max_lag_h, 0, -1):
                 shifted = np.r_[np.zeros(lag, dtype=bool), b_events[:-lag]]
-                follow |= shifted
-            hits = int((a_events.to_numpy().astype(bool) & follow).sum())
+                min_lag[a_idx & shifted] = lag
+            leads = min_lag[np.isfinite(min_lag)]
+            hits = int(len(leads))
             follow_rate = hits / n_a
+            lead_h = float(np.median(leads)) if hits else float("nan")
             # Baseline: chance B starts in *any* random max_lag_h-hour window.
             p_b = b_events.sum() / n_hours
             base = 1 - (1 - p_b) ** max_lag_h
@@ -151,6 +154,7 @@ def propagation_lead_lag(series: pd.DataFrame, max_lag_h: int = 6) -> pd.DataFra
                 "from": a, "to": b, "n_from": n_a,
                 "followed": hits, "follow_rate": follow_rate,
                 "base_rate": base, "lift": follow_rate / base if base else np.nan,
+                "lead_h": lead_h,
             })
     return pd.DataFrame(rows).sort_values("lift", ascending=False)
 

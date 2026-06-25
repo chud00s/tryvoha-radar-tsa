@@ -42,7 +42,9 @@ GOOD, WARN, BAD = "#54a24b", "#f5a623", "#e5484d"   # semantic danger scale
 HEAT_SCALE = [[0.0, "#101319"], [0.4, "#21407a"], [0.7, "#3f6fcf"], [1.0, ACCENT]]
 
 GEOJSON_PATH = config.DATA_RAW / "ua_oblasts.geojson"
-MODES = [("consumer", "👤 Споживач"), ("analyst", "🛠️ Аналітик")]
+MODES = [("consumer", "👤 Споживач"), ("analyst", "🛠️ Аналітик"), ("osint", "🛰️ OSINT · Telegram")]
+THREAT_TYPES = ["пуск", "рух", "загроза"]
+ACTIVE_WINDOW_H = 12
 
 DOW_NAMES = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
 EVENT_COLORS = {
@@ -142,7 +144,7 @@ def get_series() -> pd.DataFrame:
     return load_series()
 
 
-@st.cache_data
+@st.cache_data(ttl=15)
 def get_events() -> pd.DataFrame:
     return load_events()
 
@@ -248,17 +250,16 @@ def _set_mode(m: str):
 
 
 def mode_switch() -> str:
-    """Two dynamic role buttons; active = cornflower fill. State in session_state.
-    Uses on_click callbacks so the new mode is applied before the rerun renders —
+    """Dynamic role buttons stacked vertically; active = cornflower fill. State in
+    session_state. on_click callbacks apply the new mode before the rerun renders —
     no highlight lag, no explicit st.rerun()."""
     if "mode" not in st.session_state:
         st.session_state.mode = "consumer"
-    cols = st.columns(len(MODES))
-    for col, (key, label) in zip(cols, MODES):
+    for key, label in MODES:
         active = st.session_state.mode == key
-        col.button(label, key=f"mode_btn_{key}",
-                   type="primary" if active else "secondary", use_container_width=True,
-                   on_click=_set_mode, args=(key,))
+        st.button(label, key=f"mode_btn_{key}",
+                  type="primary" if active else "secondary", use_container_width=True,
+                  on_click=_set_mode, args=(key,))
     return st.session_state.mode
 
 
@@ -335,12 +336,6 @@ def _style(fig: go.Figure) -> go.Figure:
 
 def show(fig: go.Figure):
     st.plotly_chart(_style(fig), use_container_width=True)
-
-
-def map_layout(fig: go.Figure) -> go.Figure:
-    fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), paper_bgcolor="rgba(0,0,0,0)",
-                      font=dict(family="Inter, sans-serif", color=ASH))
-    return fig
 
 
 def _risk_phrase(r: float) -> str:
@@ -461,7 +456,7 @@ def render_analyst(region: str | None):
     st.subheader(f"🛠️ Аналітика — {geo.ua_name(region)}")
     tabs = st.tabs([
         "🗺️ Карта ризику", "📈 Патерни", "🎯 Якість моделі",
-        "🚨 Масовані атаки", "🔗 Поширення", "🛰️ OSINT-шар",
+        "🚨 Масовані атаки", "🔗 Поширення",
     ])
 
     with tabs[0]:
@@ -606,54 +601,141 @@ def render_analyst(region: str | None):
         fig.update_yaxes(autorange="reversed")
         show(fig)
 
-    with tabs[5]:
-        render_osint_tab()
+
+# --------------------------------------------------------------------------- #
+# OSINT mode — live threat layer (its own top-level section)
+# --------------------------------------------------------------------------- #
+def _recent_events(ev: pd.DataFrame) -> tuple[pd.DataFrame, "pd.Timestamp | None"]:
+    if ev.empty:
+        return ev, None
+    now = ev["timestamp"].max()
+    rec = ev[ev["timestamp"] >= now - pd.Timedelta(hours=ACTIVE_WINDOW_H)].copy()
+    return rec, now
 
 
-def render_osint_tab():
+def predicted_vectors(active_regions: list[str]) -> list[dict]:
+    """For each active threat oblast, the most likely NEXT oblast (highest lift)
+    with its empirical lead time — the data-backed 'куди далі'."""
+    prop = propagation()
+    vecs, seen = [], set()
+    for r in active_regions:
+        if r in seen or r not in geo.COORDS:
+            continue
+        seen.add(r)
+        cand = prop[prop["from"] == r]
+        if cand.empty:
+            continue
+        top = cand.sort_values("lift", ascending=False).iloc[0]
+        to = top["to"]
+        if to not in geo.COORDS:
+            continue
+        lead = top.get("lead_h", float("nan"))
+        lead_lbl = ("<1 год" if lead == lead and lead < 1
+                    else f"~{int(round(lead))} год" if lead == lead else "")
+        c0, c1 = geo.COORDS[r], geo.COORDS[to]
+        vecs.append({"lat0": c0[0], "lon0": c0[1], "lat1": c1[0], "lon1": c1[1],
+                     "to_ua": geo.ua_name(to), "from_ua": geo.ua_name(r),
+                     "label": f"{geo.ua_name(to)} · {top['lift']:.1f}× · {lead_lbl}"})
+    return vecs[:5]
+
+
+def threat_map(risk_df: pd.DataFrame, rec: pd.DataFrame, vectors: list[dict]) -> go.Figure:
+    gj = ukraine_geojson()
+    canon = {f["properties"]["canon"] for f in gj["features"]}
+    base = risk_df[risk_df["region"].isin(canon)]
+    fig = go.Figure(go.Choroplethmap(
+        geojson=gj, featureidkey="properties.canon", locations=base["region"],
+        z=base["risk"], zmin=0, zmax=1, colorscale=[[0.0, GOOD], [0.5, WARN], [1.0, BAD]],
+        marker=dict(opacity=0.30, line=dict(color=STEEL, width=0.4)),
+        showscale=False, hoverinfo="skip",
+    ))
+    for v in vectors:  # predicted-next propagation vectors
+        fig.add_trace(go.Scattermap(lat=[v["lat0"], v["lat1"]], lon=[v["lon0"], v["lon1"]],
+                                    mode="lines", line=dict(color=ACCENT, width=2),
+                                    hoverinfo="skip", showlegend=False))
+        fig.add_trace(go.Scattermap(lat=[v["lat1"]], lon=[v["lon1"]], mode="markers+text",
+                                    marker=dict(size=8, color=ACCENT), text=[v["label"]],
+                                    textposition="top center", textfont=dict(color=ACCENT, size=10),
+                                    hoverinfo="skip", showlegend=False))
+    if not rec.empty:
+        m = rec.dropna(subset=["lat", "lon"]).copy()
+        m["k"] = m.groupby("region").cumcount()
+        m["lat"] += (m["k"] % 3 - 1) * 0.09
+        m["lon"] += (m["k"] // 3) * 0.11
+        m["name_ua"] = m["region"].map(geo.ua_name)
+        m["t"] = m["timestamp"].dt.tz_convert(config.DISPLAY_TZ).dt.strftime("%H:%M")
+        for et, color in EVENT_COLORS.items():
+            sub = m[m["event_type"] == et]
+            if sub.empty:
+                continue
+            fig.add_trace(go.Scattermap(
+                lat=sub["lat"], lon=sub["lon"], mode="markers", name=et,
+                marker=dict(size=13, color=color),
+                customdata=sub[["name_ua", "weapon", "t"]].to_numpy(),
+                hovertemplate="<b>%{customdata[0]}</b><br>" + et +
+                              " · %{customdata[1]} · %{customdata[2]}<extra></extra>",
+            ))
+    fig.update_layout(
+        map=dict(style="carto-darkmatter", zoom=4.4, center={"lat": 48.6, "lon": 31.4}),
+        margin=dict(l=0, r=0, t=0, b=0), height=580, paper_bgcolor="rgba(0,0,0,0)",
+        legend=dict(font=dict(color=ASH, size=11), bgcolor="rgba(20,20,20,0.6)", title_text=""),
+        hoverlabel=dict(bgcolor=CARBON, bordercolor=STEEL, font=dict(family="Inter", color=SNOW)),
+    )
+    return fig
+
+
+@st.fragment(run_every="30s")
+def render_osint():
+    st.subheader("🛰️ OSINT — жива карта загроз")
+    method = ""
     ev = get_events()
     if ev.empty:
-        st.info("Кеш подій порожній. Запустіть `python -m src.ai_extractor`.")
+        st.info("Кеш подій порожній. Запустіть `python -m src.ai_extractor` "
+                "або live-колектор `python -m src.collector`.")
         return
     method = ev["method"].iloc[0] if "method" in ev else "—"
-    st.caption(
-        f"OSINT-шар: повідомлення з Telegram → структуровані події через "
-        f"{'LLM (Claude)' if method == 'llm' else 'rule-based fallback'}. "
-        "Дані — демонстраційний зразок; з live-Telegram оновлюється у реальному часі."
-    )
+    rec, _now = _recent_events(ev)
+    threat_regions = [r for r in
+                      dict.fromkeys(rec.sort_values("timestamp", ascending=False)["region"].tolist())
+                      if r and r in set(rec[rec["event_type"].isin(THREAT_TYPES)]["region"])]
+    vectors = predicted_vectors(threat_regions)
+    risk_df = get_risk_now()
 
-    c1, c2 = st.columns([3, 2])
-    with c1:
-        geo_ev = ev.dropna(subset=["lat", "lon"]).copy()
-        geo_ev["k"] = geo_ev.groupby("region").cumcount()
-        geo_ev["lat"] += (geo_ev["k"] % 3 - 1) * 0.10
-        geo_ev["lon"] += (geo_ev["k"] // 3) * 0.12
-        geo_ev["область"] = geo_ev["region"].map(geo.ua_name)
-        geo_ev["час"] = geo_ev["timestamp"].dt.tz_convert(config.DISPLAY_TZ).dt.strftime("%m-%d %H:%M")
-        fig = px.scatter_map(
-            geo_ev, lat="lat", lon="lon", color="event_type", map_style="carto-darkmatter",
-            color_discrete_map=EVENT_COLORS, hover_name="область",
-            hover_data={"час": True, "weapon": True, "lat": False, "lon": False, "k": False, "event_type": False},
-            zoom=4.3, center={"lat": 48.5, "lon": 31.4}, height=520,
+    col_map, col_feed = st.columns([3, 2])
+    with col_map:
+        st.plotly_chart(threat_map(risk_df, rec, vectors), use_container_width=True)
+        st.caption(
+            f"Маркери — OSINT-події за останні {ACTIVE_WINDOW_H} год "
+            f"({'LLM (Claude)' if method == 'llm' else 'rule-based'}). "
+            "Сині вектори — ймовірно наступна область за аналітикою поширення (ETA орієнтовно)."
         )
-        fig.update_traces(marker=dict(size=13))
-        fig.update_layout(legend_title="Тип події")
-        st.plotly_chart(map_layout(fig), use_container_width=True)
-    with c2:
+    with col_feed:
+        eyebrow("СТРІЧКА ПОДІЙ")
+        feed = ev.sort_values("timestamp", ascending=False).head(10).copy()
+        feed["час"] = feed["timestamp"].dt.tz_convert(config.DISPLAY_TZ).dt.strftime("%m-%d %H:%M")
+        feed["область"] = feed["region"].map(geo.ua_name)
+        st.dataframe(
+            feed[["час", "event_type", "weapon", "область"]]
+            .rename(columns={"event_type": "подія", "weapon": "засіб"}),
+            use_container_width=True, hide_index=True, height=300,
+        )
+        if vectors:
+            eyebrow("ПРОГНОЗ ПОШИРЕННЯ")
+            for v in vectors[:4]:
+                st.markdown(f"- **{v['from_ua']}** → {v['label']}")
+
+    st.divider()
+    c1, c2 = st.columns([2, 3])
+    with c1:
         counts = ev["event_type"].value_counts().reset_index()
         counts.columns = ["подія", "к-ть"]
         fig = px.bar(counts, x="к-ть", y="подія", orientation="h", color="подія",
                      color_discrete_map=EVENT_COLORS, title="Події за типом")
         fig.update_layout(height=300, margin=dict(t=40), showlegend=False, yaxis_title=None)
         show(fig)
-        wc = ev["weapon"].value_counts().reset_index()
-        wc.columns = ["засіб", "к-ть"]
-        st.dataframe(wc, use_container_width=True, hide_index=True)
-
-    st.divider()
-    eyebrow("СИНТЕЗ · OSINT × ТРИВОГИ")
-    st.markdown("##### 🔬 OSINT-події vs офіційні тривоги")
-    fusion_view(ev)
+    with c2:
+        eyebrow("СИНТЕЗ · OSINT × ТРИВОГИ")
+        fusion_view(ev)
 
 
 def fusion_view(ev: pd.DataFrame):
@@ -703,13 +785,17 @@ def main():
         if mode == "consumer":
             region = st.selectbox("Ваша область", regions,
                                   index=regions.index("Kyiv City"), format_func=geo.ua_name)
-        else:
+        elif mode == "analyst":
             region = st.selectbox("Фокус (необов'язково)", [None] + regions, format_func=geo.ua_name)
+        else:
+            region = None
 
     if mode == "consumer":
         render_consumer(region)
-    else:
+    elif mode == "analyst":
         render_analyst(region)
+    else:
+        render_osint()
 
 
 main()
