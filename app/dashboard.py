@@ -11,6 +11,7 @@ radii, flat (no shadows). Danger semantics (red/amber/green) kept for risk only.
 from __future__ import annotations
 
 import json
+import math
 import pathlib
 import sys
 
@@ -798,161 +799,168 @@ def _recent_events(ev: pd.DataFrame) -> tuple[pd.DataFrame, "pd.Timestamp | None
     return rec, now
 
 
-def predicted_vectors(active_regions: list[str]) -> list[dict]:
-    """For each active threat oblast, the most likely NEXT oblast (highest lift)
-    with its empirical lead time — the data-backed 'куди далі'."""
-    prop = propagation()
-    vecs, seen = [], set()
-    for r in active_regions:
-        if r in seen or r not in geo.COORDS:
-            continue
-        seen.add(r)
-        cand = prop[prop["from"] == r]
-        if cand.empty:
-            continue
-        top = cand.sort_values("lift", ascending=False).iloc[0]
-        to = top["to"]
-        if to not in geo.COORDS:
-            continue
-        lead = top.get("lead_h", float("nan"))
-        lead_lbl = ("<1 год" if lead == lead and lead < 1
-                    else f"~{int(round(lead))} год" if lead == lead else "")
-        c0, c1 = geo.COORDS[r], geo.COORDS[to]
-        vecs.append({"lat0": c0[0], "lon0": c0[1], "lat1": c1[0], "lon1": c1[1],
-                     "to_ua": geo.ua_name(to), "from_ua": geo.ua_name(r),
-                     "label": f"{geo.ua_name(to)} · {top['lift']:.1f}× · {lead_lbl}"})
-    return vecs[:5]
+ROCKET_SPEED_KMH = 800  # generic cruise-missile speed for schematic ETA
 
 
-def threat_map(risk_df: pd.DataFrame, rec: pd.DataFrame, vectors: list[dict]) -> go.Figure:
-    gj = ukraine_geojson()
-    canon = {f["properties"]["canon"] for f in gj["features"]}
-    base = risk_df[risk_df["region"].isin(canon)]
-    fig = go.Figure(go.Choroplethmap(
-        geojson=gj, featureidkey="properties.canon", locations=base["region"],
-        z=base["risk"], zmin=0, zmax=1, colorscale=[[0.0, GOOD], [0.5, WARN], [1.0, BAD]],
-        marker=dict(opacity=0.30, line=dict(color=STEEL, width=0.4)),
-        showscale=False, hoverinfo="skip",
-    ))
-    for v in vectors:  # predicted-next propagation vectors
-        fig.add_trace(go.Scattermap(lat=[v["lat0"], v["lat1"]], lon=[v["lon0"], v["lon1"]],
-                                    mode="lines", line=dict(color=ACCENT, width=2),
-                                    hoverinfo="skip", showlegend=False))
-        fig.add_trace(go.Scattermap(lat=[v["lat1"]], lon=[v["lon1"]], mode="markers+text",
-                                    marker=dict(size=8, color=ACCENT), text=[v["label"]],
-                                    textposition="top center", textfont=dict(color=ACCENT, size=10),
-                                    hoverinfo="skip", showlegend=False))
-    if not rec.empty:
-        m = rec.dropna(subset=["lat", "lon"]).copy()
-        m["k"] = m.groupby("region").cumcount()
-        m["lat"] += (m["k"] % 3 - 1) * 0.09
-        m["lon"] += (m["k"] // 3) * 0.11
-        m["name_ua"] = m["region"].map(geo.ua_name)
-        m["t"] = m["timestamp"].dt.tz_convert(config.DISPLAY_TZ).dt.strftime("%H:%M")
-        for et, color in EVENT_COLORS.items():
-            sub = m[m["event_type"] == et]
-            if sub.empty:
+def _haversine_km(a: tuple, b: tuple) -> float:
+    (la1, lo1), (la2, lo2) = a, b
+    p1, p2 = math.radians(la1), math.radians(la2)
+    h = (math.sin(math.radians(la2 - la1) / 2) ** 2
+         + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lo2 - lo1) / 2) ** 2)
+    return 2 * 6371.0 * math.asin(math.sqrt(h))
+
+
+def _rocket_origin(region: str) -> tuple:
+    """Schematic launch point east of the target, inside Russian territory."""
+    lat, lon = geo.COORDS.get(region, (49.0, 36.0))
+    return (lat, min(max(lon + 4.0, 38.5), 41.0))
+
+
+def _rocket_eta(origin: tuple, event_ts, top: int = 8) -> pd.DataFrame:
+    """Approx arrival time per oblast from a schematic origin (msg time + dist/speed)."""
+    rows = []
+    for r in geo.REGIONS:
+        c = geo.COORDS.get(r)
+        if not c:
+            continue
+        mins = _haversine_km(origin, c) / ROCKET_SPEED_KMH * 60
+        arr = (event_ts + pd.Timedelta(minutes=mins)).tz_convert(config.DISPLAY_TZ)
+        rows.append({"область": geo.ua_name(r), "через ~хв": int(round(mins)),
+                     "підліт (Київ)": arr.strftime("%H:%M")})
+    return pd.DataFrame(rows).sort_values("через ~хв").head(top)
+
+
+def _osint_threat_fig(gj, drones, rockets, impacts, intercepts, selected, show_air, show_hits):
+    """Live threat layer: drones at location, rockets schematically in RF, impacts
+    (red) / intercepts (green); a selected drone shades likely-next oblasts."""
+    fig = go.Figure(_nodata_base(gj))
+
+    if selected and selected[0] == "drone":  # shade probable next oblasts
+        cand = propagation()
+        cand = cand[cand["from"] == selected[1]["region"]]
+        if not cand.empty:
+            fig.add_trace(go.Choroplethmap(
+                geojson=gj, featureidkey="properties.canon", locations=cand["to"],
+                z=cand["follow_rate"], zmin=0, zmax=1, colorscale=[[0, "#16243f"], [1, ACCENT]],
+                showscale=False, marker=dict(opacity=0.55, line=dict(color=STEEL, width=0.4)),
+                customdata=[[geo.ua_name(t)] for t in cand["to"]],
+                hovertemplate="<b>%{customdata[0]}</b><br>ймовірність напрямку: %{z:.0%}<extra></extra>"))
+            top = cand.sort_values("follow_rate", ascending=False).iloc[0]
+            c0, c1 = geo.COORDS.get(selected[1]["region"]), geo.COORDS.get(top["to"])
+            if c0 and c1:
+                fig.add_trace(go.Scattermap(lat=[c0[0], c1[0]], lon=[c0[1], c1[1]], mode="lines",
+                    line=dict(color=ACCENT, width=2), hoverinfo="skip", showlegend=False))
+
+    if show_air:
+        if not drones.empty:
+            d = drones.copy()
+            d["lat"] = d["region"].map(lambda r: geo.COORDS.get(r, (None, None))[0])
+            d["lon"] = d["region"].map(lambda r: geo.COORDS.get(r, (None, None))[1])
+            d = d.dropna(subset=["lat", "lon"])
+            d["ua"] = d["region"].map(geo.ua_name)
+            d["t"] = d["timestamp"].dt.tz_convert(config.DISPLAY_TZ).dt.strftime("%H:%M")
+            fig.add_trace(go.Scattermap(lat=d["lat"], lon=d["lon"], mode="markers", name="дрон",
+                marker=dict(size=14, color="#f5a623"), customdata=d[["ua", "t"]].to_numpy(),
+                hovertemplate="Дрон (Shahed)<br><b>%{customdata[0]}</b> · %{customdata[1]}<extra></extra>"))
+        if not rockets.empty:
+            r = rockets.copy()
+            origins = [_rocket_origin(reg) for reg in r["region"]]
+            r["lat"] = [o[0] for o in origins]
+            r["lon"] = [o[1] for o in origins]
+            r["ua"] = r["region"].map(geo.ua_name)
+            r["t"] = r["timestamp"].dt.tz_convert(config.DISPLAY_TZ).dt.strftime("%H:%M")
+            fig.add_trace(go.Scattermap(lat=r["lat"], lon=r["lon"], mode="markers", name="ракета",
+                marker=dict(size=15, color="#c77dff"), customdata=r[["ua", "t"]].to_numpy(),
+                hovertemplate="Ракета (схематично, рф)<br>ціль: <b>%{customdata[0]}</b> · %{customdata[1]}<extra></extra>"))
+
+    if show_hits:
+        for df, color, label in [(intercepts, "#54a24b", "збито"), (impacts, "#e5484d", "влучання")]:
+            if df.empty:
                 continue
-            fig.add_trace(go.Scattermap(
-                lat=sub["lat"], lon=sub["lon"], mode="markers", name=et,
-                marker=dict(size=13, color=color),
-                customdata=sub[["name_ua", "weapon", "t"]].to_numpy(),
-                hovertemplate="<b>%{customdata[0]}</b><br>" + et +
-                              " · %{customdata[1]} · %{customdata[2]}<extra></extra>",
-            ))
+            h = df.copy()
+            h["k"] = h.groupby("region").cumcount()
+            h["lat"] = h["lat"] + (h["k"] % 3 - 1) * 0.08
+            h["lon"] = h["lon"] + (h["k"] // 3) * 0.10
+            h["ua"] = h["region"].map(geo.ua_name)
+            h["t"] = h["timestamp"].dt.tz_convert(config.DISPLAY_TZ).dt.strftime("%H:%M")
+            fig.add_trace(go.Scattermap(lat=h["lat"], lon=h["lon"], mode="markers",
+                marker=dict(size=26, color=color, opacity=0.22), hoverinfo="skip", showlegend=False))
+            fig.add_trace(go.Scattermap(lat=h["lat"], lon=h["lon"], mode="markers", name=label,
+                marker=dict(size=12, color=color), customdata=h[["ua", "t"]].to_numpy(),
+                hovertemplate=label.capitalize() + "<br><b>%{customdata[0]}</b> · %{customdata[1]}<extra></extra>"))
+
     fig.update_layout(
-        map=dict(style="carto-darkmatter", zoom=4.4, center={"lat": 48.6, "lon": 31.4}),
+        map=dict(style="carto-darkmatter", zoom=4.2, center={"lat": 48.8, "lon": 34.8}),
         margin=dict(l=0, r=0, t=0, b=0), height=580, paper_bgcolor="rgba(0,0,0,0)",
-        legend=dict(font=dict(color=ASH, size=11), bgcolor="rgba(20,20,20,0.6)", title_text=""),
+        legend=dict(font=dict(color=ASH, size=11), bgcolor="rgba(20,20,20,0.65)", title_text="",
+                    orientation="h", y=0.99, x=0.01),
         hoverlabel=dict(bgcolor=CARBON, bordercolor=STEEL, font=dict(family="Inter", color=SNOW)),
     )
     return fig
 
 
-@st.fragment(run_every="30s")
 def render_osint():
     st.subheader(":material/radar: Загрози зараз — жива карта")
-    method = ""
     ev = get_events()
     if ev.empty:
         st.info("Кеш подій порожній. Запустіть `python -m src.ai_extractor` "
                 "або live-колектор `python -m src.collector`.")
         return
-    method = ev["method"].iloc[0] if "method" in ev else "—"
     rec, _now = _recent_events(ev)
-    threat_regions = [r for r in
-                      dict.fromkeys(rec.sort_values("timestamp", ascending=False)["region"].tolist())
-                      if r and r in set(rec[rec["event_type"].isin(THREAT_TYPES)]["region"])]
-    vectors = predicted_vectors(threat_regions)
-    risk_df = get_risk_now()
+    gj = ukraine_geojson()
+    inflight = rec[rec["event_type"].isin(["пуск", "рух"]) & rec["region"].notna()].sort_values(
+        "timestamp", ascending=False)
+    drones = inflight[inflight["weapon"] == "дрон/шахед"]
+    rockets = inflight[inflight["weapon"] == "ракета"]
+    impacts = rec[rec["event_type"] == "влучання"].dropna(subset=["lat", "lon"])
+    intercepts = rec[rec["event_type"] == "збиття"].dropna(subset=["lat", "lon"])
+    active = not drones.empty or not rockets.empty
 
     col_map, col_feed = st.columns([3, 2])
     with col_map:
-        st.plotly_chart(threat_map(risk_df, rec, vectors), use_container_width=True)
-        st.caption(
-            f"Маркери — події з Telegram-моніторингу за останні {ACTIVE_WINDOW_H} год "
-            f"({'обробка через ШІ' if method == 'llm' else 'обробка за правилами'}). "
-            "Сині вектори — ймовірно наступна область за аналітикою поширення (час орієнтовний)."
-        )
+        if not active:
+            st.success("Наразі активних пусків немає — показано прогноз ризику тривог по областях.")
+            st.plotly_chart(risk_map(get_risk_now(), set()), use_container_width=True)
+        else:
+            cc = st.columns([1.1, 1.3, 2])
+            show_air = cc[0].toggle("Ракети та дрони", value=True, key="osint_air")
+            show_hits = cc[1].toggle("Прильоти та збиття", value=True, key="osint_hits")
+            opts = {"— огляд усіх загроз —": None}
+            for _, d in drones.iterrows():
+                opts[f"Дрон · {geo.ua_name(d['region'])} · "
+                     f"{d['timestamp'].tz_convert(config.DISPLAY_TZ).strftime('%H:%M')}"] = ("drone", d)
+            for _, r in rockets.iterrows():
+                opts[f"Ракета · ціль {geo.ua_name(r['region'])} · "
+                     f"{r['timestamp'].tz_convert(config.DISPLAY_TZ).strftime('%H:%M')}"] = ("rocket", r)
+            sel = opts[cc[2].selectbox("Фокус на загрозі", list(opts.keys()), key="osint_sel")]
+
+            st.plotly_chart(
+                _osint_threat_fig(gj, drones, rockets, impacts, intercepts, sel, show_air, show_hits),
+                use_container_width=True)
+
+            if sel and sel[0] == "rocket":
+                st.caption("Орієнтовний час підльоту по областях (від часу повідомлення, "
+                           "швидкість ~800 км/год, схематично):")
+                st.dataframe(_rocket_eta(_rocket_origin(sel[1]["region"]), sel[1]["timestamp"]),
+                             use_container_width=True, hide_index=True, height=300)
+            elif sel and sel[0] == "drone":
+                st.caption("Синім підсвічено ймовірні наступні області за нашою аналітикою поширення "
+                           "(коли немає точних даних Telegram про курс).")
+            else:
+                st.caption(f"Активні дрони/ракети за останні {ACTIVE_WINDOW_H} год. Оберіть ціль, щоб "
+                           "побачити напрямок (дрон) або час підльоту по областях (ракета). "
+                           "Прильоти — червоні, збиття — зелені.")
+
     with col_feed:
         eyebrow("СТРІЧКА ПОДІЙ")
-        feed = ev.sort_values("timestamp", ascending=False).head(10).copy()
+        feed = ev.sort_values("timestamp", ascending=False).head(14).copy()
         feed["час"] = feed["timestamp"].dt.tz_convert(config.DISPLAY_TZ).dt.strftime("%m-%d %H:%M")
         feed["область"] = feed["region"].map(geo.ua_name)
         st.dataframe(
             feed[["час", "event_type", "weapon", "область"]]
             .rename(columns={"event_type": "подія", "weapon": "засіб"}),
-            use_container_width=True, hide_index=True, height=300,
+            use_container_width=True, hide_index=True, height=560,
         )
-        if vectors:
-            eyebrow("ПРОГНОЗ ПОШИРЕННЯ")
-            for v in vectors[:4]:
-                st.markdown(f"- **{v['from_ua']}** → {v['label']}")
-
-    st.divider()
-    c1, c2 = st.columns([2, 3])
-    with c1:
-        counts = ev["event_type"].value_counts().reset_index()
-        counts.columns = ["подія", "к-ть"]
-        fig = px.bar(counts, x="к-ть", y="подія", orientation="h", color="подія",
-                     color_discrete_map=EVENT_COLORS, title="Події за типом")
-        fig.update_layout(height=300, margin=dict(t=40), showlegend=False, yaxis_title=None)
-        show(fig)
-    with c2:
-        eyebrow("СИНТЕЗ · TELEGRAM × ТРИВОГИ")
-        fusion_view(ev)
-
-
-def fusion_view(ev: pd.DataFrame):
-    series = get_series()
-    inten = analysis.national_intensity(series)
-    t0, t1 = ev["timestamp"].min(), ev["timestamp"].max()
-    win = inten[(inten["ts"] >= t0 - pd.Timedelta(hours=2)) & (inten["ts"] <= t1 + pd.Timedelta(hours=2))]
-    if win.empty:
-        st.caption("Вікно подій поза межами наявних даних тривог — синтез недоступний для цього зразка.")
-        return
-    ev_hourly = ev.assign(h=ev["timestamp"].dt.floor("h")).groupby("h").size().rename("events").reset_index()
-    win = win.copy()
-    win["ts_local"] = win["ts"].dt.tz_convert(config.DISPLAY_TZ)
-    ev_hourly["ts_local"] = ev_hourly["h"].dt.tz_convert(config.DISPLAY_TZ)
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=win["ts_local"], y=win["regions_active"], name="областей під тривогою",
-                             mode="lines", line_color=ACCENT, fill="tozeroy", fillcolor="rgba(103,152,255,0.15)",
-                             hovertemplate="%{x|%d.%m %H:%M}<br>областей під тривогою: %{y}<extra></extra>"))
-    fig.add_trace(go.Bar(x=ev_hourly["ts_local"], y=ev_hourly["events"], name="подій з Telegram/год",
-                         marker_color=ASH, yaxis="y2", opacity=0.85,
-                         hovertemplate="%{x|%d.%m %H:%M}<br>подій: %{y}<extra></extra>"))
-    fig.update_layout(
-        height=360, margin=dict(t=30), yaxis=dict(title="Областей під тривогою"),
-        yaxis2=dict(title="OSINT-подій", overlaying="y", side="right", showgrid=False),
-        legend=dict(orientation="h", y=1.12),
-    )
-    show(fig)
-    st.caption(
-        "Сплески OSINT-повідомлень синхронні зі зростанням кількості областей під тривогою — "
-        "OSINT-моніторинг дає ранній контекст до/під час офіційних тривог."
-    )
 
 
 # --------------------------------------------------------------------------- #
