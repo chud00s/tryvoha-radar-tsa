@@ -859,48 +859,62 @@ def _osint_shading(gj, selected):
     return colors, labels
 
 
+_PULSE_CSS = (
+    "<style>@keyframes trpulse{0%{transform:scale(.5);opacity:.85}"
+    "70%{transform:scale(2.6);opacity:0}100%{opacity:0}}"
+    ".trping{position:relative;width:14px;height:14px;pointer-events:none}"
+    ".trping .c{position:absolute;left:1px;top:1px;width:12px;height:12px;border-radius:50%}"
+    ".trping .r{position:absolute;left:1px;top:1px;width:12px;height:12px;border-radius:50%;"
+    "animation:trpulse 1.6s ease-out infinite}</style>"
+)
+
+
 def _osint_folium(gj, drones, rockets, impacts, intercepts, selected, show_air, show_hits):
-    """Folium live-threat map with REAL clickable markers (drones/rockets/hits)."""
+    """Folium live-threat map. Only the drone/rocket/hit MARKERS are interactive;
+    oblast polygons are non-clickable. Impacts/intercepts pulse (CSS animation)."""
     colors, labels = _osint_shading(gj, selected)
-    m = folium.Map(location=[48.6, 33.3], zoom_start=5, tiles="CartoDB dark_matter",
-                   zoom_control=True)
+    m = folium.Map(location=[48.6, 33.3], zoom_start=5, tiles="CartoDB dark_matter", zoom_control=True)
+    m.get_root().header.add_child(folium.Element(_PULSE_CSS))
     folium.GeoJson(
-        gj, name="oblasts",
+        gj, name="oblasts", interactive=False,
         style_function=lambda f: {"fillColor": colors.get(f["properties"]["canon"], "#1b2230"),
                                   "color": "#313131", "weight": 0.6, "fillOpacity": 0.6},
-        highlight_function=lambda f: {"weight": 1.5, "color": ACCENT},
-        tooltip=folium.GeoJsonTooltip(fields=["ua"], labels=False),
     ).add_to(m)
 
     for canon, txt in labels.items():
         c = geo.COORDS.get(canon)
         if c:
-            folium.Marker(list(c), icon=folium.DivIcon(
+            folium.Marker(list(c), interactive=False, icon=folium.DivIcon(
                 html=f'<div style="color:#fff;font:600 11px Inter,sans-serif;text-align:center;'
-                     f'text-shadow:0 0 3px #000;">{txt}</div>',
+                     f'text-shadow:0 0 3px #000;pointer-events:none;">{txt}</div>',
                 icon_size=(44, 16), icon_anchor=(22, 8))).add_to(m)
-
-    def mark(lat, lon, color, radius, tip):
-        folium.CircleMarker([lat, lon], radius=radius, color=color, weight=1,
-                            fill=True, fill_color=color, fill_opacity=0.9, tooltip=tip).add_to(m)
 
     if show_air:
         for _, d in drones.iterrows():
             c = geo.COORDS.get(d["region"])
             if c:
                 t = d["timestamp"].tz_convert(config.DISPLAY_TZ).strftime("%H:%M")
-                mark(c[0], c[1], "#f5a623", 8, f"Дрон (Shahed) · {geo.ua_name(d['region'])} · {t}")
+                folium.CircleMarker([c[0], c[1]], radius=8, color="#f5a623", weight=1, fill=True,
+                                    fill_color="#f5a623", fill_opacity=0.9,
+                                    tooltip=f"Дрон (Shahed) · {geo.ua_name(d['region'])} · {t}").add_to(m)
         for _, r in rockets.iterrows():
             o = _rocket_origin(r["region"])
             t = r["timestamp"].tz_convert(config.DISPLAY_TZ).strftime("%H:%M")
-            mark(o[0], o[1], "#c77dff", 9, f"Ракета (схематично, рф) · ціль {geo.ua_name(r['region'])} · {t}")
+            folium.CircleMarker([o[0], o[1]], radius=9, color="#c77dff", weight=1, fill=True,
+                                fill_color="#c77dff", fill_opacity=0.9,
+                                tooltip=f"Ракета (схематично, рф) · ціль {geo.ua_name(r['region'])} · {t}").add_to(m)
     if show_hits:
+        def ping(lat, lon, color, tip):
+            folium.Marker([lat, lon], tooltip=tip, icon=folium.DivIcon(
+                html=f'<div class="trping"><span class="r" style="background:{color}"></span>'
+                     f'<span class="c" style="background:{color}"></span></div>',
+                icon_size=(14, 14), icon_anchor=(7, 7))).add_to(m)
         for _, e in intercepts.iterrows():
             t = e["timestamp"].tz_convert(config.DISPLAY_TZ).strftime("%H:%M")
-            mark(e["lat"], e["lon"], "#54a24b", 8, f"Збито · {geo.ua_name(e['region'])} · {t}")
+            ping(e["lat"], e["lon"], "#54a24b", f"Збито · {geo.ua_name(e['region'])} · {t}")
         for _, e in impacts.iterrows():
             t = e["timestamp"].tz_convert(config.DISPLAY_TZ).strftime("%H:%M")
-            mark(e["lat"], e["lon"], "#e5484d", 8, f"Влучання · {geo.ua_name(e['region'])} · {t}")
+            ping(e["lat"], e["lon"], "#e5484d", f"Влучання · {geo.ua_name(e['region'])} · {t}")
     return m
 
 
