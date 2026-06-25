@@ -135,6 +135,37 @@ def mass_attack_episodes(
     return df
 
 
+def surprise_days(series: pd.DataFrame, window_days: int = 28, z_thresh: float = 3.0) -> pd.DataFrame:
+    """Days whose activity DEVIATES from the recently-expected pattern.
+
+    Compares actual daily national intensity (oblast-hours under alert) to the
+    expected level — a robust trailing baseline (median of the last
+    ``window_days``). A "surprise" is a day far above that baseline (robust
+    z >= ``z_thresh``): a genuine anomaly = a break from the recent pattern
+    (new wave / tactic shift), not just an absolutely-large night.
+
+    Returns: date, actual, expected, z, ratio, is_surprise.
+    """
+    inten = national_intensity(series).copy()
+    day = inten["ts"].dt.tz_convert(config.DISPLAY_TZ).dt.normalize()
+    daily = inten.groupby(day)["regions_active"].sum().rename("actual").sort_index()
+
+    prev = daily.shift(1)
+    expected = prev.rolling(window_days, min_periods=7).median()
+    mad = prev.rolling(window_days, min_periods=7).apply(
+        lambda x: np.median(np.abs(x - np.median(x))), raw=True)
+    scale = (1.4826 * mad).replace(0, np.nan)
+    z = (daily - expected) / scale
+
+    out = pd.DataFrame({
+        "date": daily.index, "actual": daily.to_numpy(),
+        "expected": expected.to_numpy(), "z": z.to_numpy(),
+    })
+    out["ratio"] = out["actual"] / out["expected"]
+    out["is_surprise"] = (out["z"] >= z_thresh) & (out["actual"] > out["expected"])
+    return out
+
+
 def detect_mass_attacks(
     series: pd.DataFrame, window_hours: int = 24 * 14, z_thresh: float = 3.0
 ) -> pd.DataFrame:

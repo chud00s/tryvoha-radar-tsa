@@ -208,6 +208,11 @@ def episodes() -> pd.DataFrame:
 
 
 @st.cache_data
+def surprises() -> pd.DataFrame:
+    return analysis.surprise_days(get_series())
+
+
+@st.cache_data
 def propagation() -> pd.DataFrame:
     return analysis.propagation_lead_lag(get_series())
 
@@ -332,6 +337,8 @@ def _style(fig: go.Figure) -> go.Figure:
         title_font=dict(family="Inter, sans-serif", color=SNOW, size=16),
         legend=dict(font=dict(color=ASH, size=12)),
         colorway=[ACCENT, ASH, GOOD, WARN, BAD, FOG],
+        hoverlabel=dict(bgcolor=CARBON, bordercolor=STEEL,
+                        font=dict(family="Inter, sans-serif", color=SNOW, size=12)),
     )
     fig.update_xaxes(gridcolor=CARBON, linecolor=STEEL, zerolinecolor=STEEL, tickfont=dict(color=FOG))
     fig.update_yaxes(gridcolor=CARBON, linecolor=STEEL, zerolinecolor=STEEL, tickfont=dict(color=FOG))
@@ -391,7 +398,8 @@ def hourly_fig(df: pd.DataFrame, title: str) -> go.Figure:
     fig = px.bar(df, x="hour", y="alert_rate", title=title)
     fig.update_yaxes(tickformat=".0%", title="Частка годин під тривогою")
     fig.update_xaxes(title="Година (Київ)", dtick=2)
-    fig.update_traces(marker_color=ACCENT)
+    fig.update_traces(marker_color=ACCENT,
+                      hovertemplate="Година %{x}:00<br>%{y:.0%} часу під тривогою<extra></extra>")
     fig.update_layout(height=320, margin=dict(t=40, b=10))
     return fig
 
@@ -502,12 +510,13 @@ def render_analyst(region: str | None):
     with tabs[1]:
         hm = heatmap(region)
         pivot = hm.pivot(index="dow", columns="hour", values="alert_rate").reindex(range(7))
+        pivot.index = DOW_NAMES
         fig = px.imshow(
             pivot, color_continuous_scale=HEAT_SCALE, aspect="auto",
             labels=dict(x="Година (Київ)", y="День тижня", color="Частка"),
             title="Інтенсивність тривог: день тижня × година",
         )
-        fig.update_yaxes(tickvals=list(range(7)), ticktext=DOW_NAMES)
+        fig.update_traces(hovertemplate="%{y}, %{x}:00<br>%{z:.0%} часу під тривогою<extra></extra>")
         fig.update_layout(height=360, margin=dict(t=40))
         show(fig)
 
@@ -517,7 +526,8 @@ def render_analyst(region: str | None):
         with c2:
             m = monthly(region)
             fig = px.area(m, x="month", y="alerts", title="Кількість тривог за місяцями")
-            fig.update_traces(line_color=ACCENT, fillcolor="rgba(103,152,255,0.18)")
+            fig.update_traces(line_color=ACCENT, fillcolor="rgba(103,152,255,0.18)",
+                              hovertemplate="%{x}<br>%{y} тривог<extra></extra>")
             fig.update_layout(height=320, margin=dict(t=40), xaxis_title=None, yaxis_title="К-ть тривог")
             show(fig)
 
@@ -566,6 +576,7 @@ def render_analyst(region: str | None):
                          x="метрика", y="значення", color="модель", barmode="group",
                          color_discrete_sequence=[ACCENT, "#5b6b8c", GRAPHITE],
                          title="Модель проти базлайнів (більше = краще)")
+            fig.update_traces(hovertemplate="%{fullData.name}<br>%{x}: %{y:.3f}<extra></extra>")
             fig.update_layout(height=340, margin=dict(t=40), yaxis_range=[0.5, 1.0])
             show(fig)
 
@@ -581,9 +592,11 @@ def render_analyst(region: str | None):
                 rel = m["reliability"]
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines",
-                                         line=dict(dash="dash", color=GRAPHITE), name="ідеал"))
+                                         line=dict(dash="dash", color=GRAPHITE), name="ідеал",
+                                         hoverinfo="skip"))
                 fig.add_trace(go.Scatter(x=rel["mean_predicted"], y=rel["fraction_positive"],
-                                         mode="lines+markers", name="модель", line_color=ACCENT))
+                                         mode="lines+markers", name="модель", line_color=ACCENT,
+                                         hovertemplate="Прогноз %{x:.0%} → факт %{y:.0%}<extra></extra>"))
                 fig.update_layout(title="Калібрування (reliability)", height=330,
                                   xaxis_title="Прогнозована ймовірність", yaxis_title="Фактична частка")
                 show(fig)
@@ -598,9 +611,11 @@ def render_analyst(region: str | None):
                 roc = m["roc_curve"]
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines",
-                                         line=dict(dash="dash", color=GRAPHITE), name="випадково"))
+                                         line=dict(dash="dash", color=GRAPHITE), name="випадково",
+                                         hoverinfo="skip"))
                 fig.add_trace(go.Scatter(x=roc["fpr"], y=roc["tpr"], mode="lines",
-                                         name=f"ROC (AUC={m['model']['roc_auc']:.3f})", line_color=ACCENT))
+                                         name=f"ROC (AUC={m['model']['roc_auc']:.3f})", line_color=ACCENT,
+                                         hovertemplate="Хибних тривог %{x:.0%} · виявлено %{y:.0%}<extra></extra>"))
                 fig.update_layout(title="ROC-крива", height=330, xaxis_title="FPR", yaxis_title="TPR")
                 show(fig)
 
@@ -634,10 +649,59 @@ def render_analyst(region: str | None):
                 "інфраструктури, оцінка інтенсивності повітряної кампанії в часі."
             )
 
+        st.divider()
+        eyebrow("НЕСПОДІВАНІ СПЛЕСКИ · ФАКТ vs ОЧІКУВАНО")
+        with st.popover(":material/info: Що таке несподіваний сплеск і навіщо він"):
+            st.markdown(
+                "Щодня порівнюємо **фактичну** інтенсивність (область-годин під тривогою) з **очікуваною** — "
+                "нормою за останні 4 тижні. **Несподіваний сплеск** — день, коли тривог було значно більше, "
+                "ніж передбачає недавній патерн (надійний z ≥ 3).\n\n"
+                "**Навіщо це, а не просто великі ночі.** Масштабні за абсолютом атаки видно й так. Цінніше — "
+                "зловити **зміну патерну**: початок нової хвилі/кампанії або зсув тактики ворога, який ще не "
+                "став «новою нормою».\n\n"
+                "**Як використати.** Раннє виявлення ескалації; перевірка гіпотез («чи справді цього тижня "
+                "інтенсивніше?»); співставлення сплесків із подіями на фронті та в постачанні засобів."
+            )
+        sur = surprises().dropna(subset=["expected"]).copy()
+        sur["d"] = pd.to_datetime(sur["date"])
+        sp = sur[sur["is_surprise"]]
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=sur["d"], y=sur["expected"], name="очікувано (норма)", mode="lines",
+                                 line=dict(color=FOG, dash="dot"),
+                                 hovertemplate="%{x|%d.%m.%Y}<br>очікувано ~%{y:.0f}<extra></extra>"))
+        fig.add_trace(go.Scatter(x=sur["d"], y=sur["actual"], name="фактично", mode="lines",
+                                 line=dict(color=ACCENT),
+                                 hovertemplate="%{x|%d.%m.%Y}<br>фактично %{y:.0f}<extra></extra>"))
+        fig.add_trace(go.Scatter(x=sp["d"], y=sp["actual"], name="несподіваний сплеск", mode="markers",
+                                 marker=dict(color=BAD, size=7), customdata=sp["expected"],
+                                 hovertemplate="%{x|%d.%m.%Y}<br>несподівано: %{y:.0f}"
+                                               " (норма ~%{customdata:.0f})<extra></extra>"))
+        fig.update_layout(title="Фактична vs очікувана інтенсивність", height=380,
+                          margin=dict(t=40, b=70), yaxis_title="область-годин/день",
+                          legend=dict(orientation="h", yanchor="bottom", y=-0.32, x=0, font=dict(size=11)))
+        show(fig)
+        st.caption(f"Дні, що найбільше вибилися з норми (всього {len(sp)} несподіваних днів за період):")
+        top_s = sp.sort_values("ratio", ascending=False).head(10).copy()
+        top_s["дата"] = top_s["d"].dt.strftime("%Y-%m-%d")
+        st.dataframe(
+            top_s[["дата", "expected", "actual", "ratio"]],
+            column_config={
+                "expected": st.column_config.NumberColumn(
+                    "очікувалось", format="%d", help="Норма за останні 4 тижні (медіана), область-годин/день."),
+                "actual": st.column_config.NumberColumn(
+                    "фактично", format="%d", help="Скільки було насправді цього дня."),
+                "ratio": st.column_config.NumberColumn(
+                    "× норми", format="%.1f", help="У скільки разів більше за очікуване."),
+            },
+            use_container_width=True, hide_index=True, height=300,
+        )
+
+        st.divider()
+        eyebrow("ЕПІЗОДИ ЗА МІСЯЦЯМИ")
         eps["month"] = eps["start_local"].dt.strftime("%Y-%m")
         by_month = eps.groupby("month").size().rename("к-ть").reset_index()
         fig = px.bar(by_month, x="month", y="к-ть", title="Масовані атаки за місяцями")
-        fig.update_traces(marker_color=ACCENT)
+        fig.update_traces(marker_color=ACCENT, hovertemplate="%{x}<br>%{y} епізодів<extra></extra>")
         fig.update_layout(height=320, margin=dict(t=40), xaxis_title=None, yaxis_title="епізодів/міс")
         show(fig)
 
@@ -701,6 +765,7 @@ def render_analyst(region: str | None):
         )
         fig = px.bar(prop, x="lift", y=prop["з області"] + " → " + prop["в область"], orientation="h",
                      title="Топ-коридори поширення (lift)", color="lift", color_continuous_scale=HEAT_SCALE)
+        fig.update_traces(hovertemplate="%{y}<br>підсилення ×%{x:.2f}<extra></extra>")
         fig.update_layout(height=460, margin=dict(t=40), yaxis_title=None, xaxis_title="lift ×")
         fig.update_yaxes(autorange="reversed")
         show(fig)
@@ -857,9 +922,11 @@ def fusion_view(ev: pd.DataFrame):
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=win["ts_local"], y=win["regions_active"], name="областей під тривогою",
-                             mode="lines", line_color=ACCENT, fill="tozeroy", fillcolor="rgba(103,152,255,0.15)"))
-    fig.add_trace(go.Bar(x=ev_hourly["ts_local"], y=ev_hourly["events"], name="OSINT-подій/год",
-                         marker_color=ASH, yaxis="y2", opacity=0.85))
+                             mode="lines", line_color=ACCENT, fill="tozeroy", fillcolor="rgba(103,152,255,0.15)",
+                             hovertemplate="%{x|%d.%m %H:%M}<br>областей під тривогою: %{y}<extra></extra>"))
+    fig.add_trace(go.Bar(x=ev_hourly["ts_local"], y=ev_hourly["events"], name="подій з Telegram/год",
+                         marker_color=ASH, yaxis="y2", opacity=0.85,
+                         hovertemplate="%{x|%d.%m %H:%M}<br>подій: %{y}<extra></extra>"))
     fig.update_layout(
         height=360, margin=dict(t=30), yaxis=dict(title="Областей під тривогою"),
         yaxis2=dict(title="OSINT-подій", overlaying="y", side="right", showgrid=False),
