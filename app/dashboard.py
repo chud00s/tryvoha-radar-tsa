@@ -45,7 +45,7 @@ GEOJSON_PATH = config.DATA_RAW / "ua_oblasts.geojson"
 MODES = [
     ("consumer", "Споживач", ":material/person:"),
     ("analyst", "Аналітик", ":material/analytics:"),
-    ("osint", "OSINT · Telegram", ":material/radar:"),
+    ("osint", "Загрози зараз", ":material/radar:"),
 ]
 THREAT_TYPES = ["пуск", "рух", "загроза"]
 ACTIVE_WINDOW_H = 12
@@ -691,7 +691,7 @@ def threat_map(risk_df: pd.DataFrame, rec: pd.DataFrame, vectors: list[dict]) ->
 
 @st.fragment(run_every="30s")
 def render_osint():
-    st.subheader(":material/radar: OSINT — жива карта загроз")
+    st.subheader(":material/radar: Загрози зараз — жива карта")
     method = ""
     ev = get_events()
     if ev.empty:
@@ -710,9 +710,9 @@ def render_osint():
     with col_map:
         st.plotly_chart(threat_map(risk_df, rec, vectors), use_container_width=True)
         st.caption(
-            f"Маркери — OSINT-події за останні {ACTIVE_WINDOW_H} год "
-            f"({'LLM (Claude)' if method == 'llm' else 'rule-based'}). "
-            "Сині вектори — ймовірно наступна область за аналітикою поширення (ETA орієнтовно)."
+            f"Маркери — події з Telegram-моніторингу за останні {ACTIVE_WINDOW_H} год "
+            f"({'обробка через ШІ' if method == 'llm' else 'обробка за правилами'}). "
+            "Сині вектори — ймовірно наступна область за аналітикою поширення (час орієнтовний)."
         )
     with col_feed:
         eyebrow("СТРІЧКА ПОДІЙ")
@@ -739,7 +739,7 @@ def render_osint():
         fig.update_layout(height=300, margin=dict(t=40), showlegend=False, yaxis_title=None)
         show(fig)
     with c2:
-        eyebrow("СИНТЕЗ · OSINT × ТРИВОГИ")
+        eyebrow("СИНТЕЗ · TELEGRAM × ТРИВОГИ")
         fusion_view(ev)
 
 
@@ -778,7 +778,7 @@ def fusion_view(ev: pd.DataFrame):
 # --------------------------------------------------------------------------- #
 def main():
     inject_theme()
-    eyebrow("ПОВІТРЯНІ ТРИВОГИ · УКРАЇНА · TSA + OSINT")
+    eyebrow("ПОВІТРЯНІ ТРИВОГИ · УКРАЇНА · АНАЛІТИКА ТА ЖИВА КАРТА")
     st.title("Tryvoha Radar")
     freshness_chip()
 
